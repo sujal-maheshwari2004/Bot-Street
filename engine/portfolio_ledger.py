@@ -121,10 +121,10 @@ class ClientPortfolio:
         prev_cost = self.avg_cost.get(symbol, 0.0)
 
         new_qty = prev_qty + quantity
-        # weighted average cost basis
-        self.avg_cost[symbol] = (
-            (prev_qty * prev_cost + quantity * price) / new_qty
-        )
+        if new_qty > 0:
+            self.avg_cost[symbol] = (
+                (prev_qty * prev_cost + quantity * price) / new_qty
+            )
         self.holdings[symbol] = new_qty
         self._trade_count += 1
 
