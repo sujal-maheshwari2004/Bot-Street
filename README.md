@@ -68,6 +68,7 @@ API docs: http://localhost:8000/docs
 
 ## Directory Structure
 
+```
 market-simulator/
 │
 ├── docker-compose.yml          # Kafka KRaft single node
@@ -119,7 +120,7 @@ market-simulator/
 │
 └── data/
     └── trades.jsonl            # Append-only trade audit log
-
+```
 ---
 
 ## Kafka Topics
