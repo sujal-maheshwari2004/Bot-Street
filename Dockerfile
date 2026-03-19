@@ -8,7 +8,7 @@ ARG SCALA_VERSION=2.13
 
 # ── System dependencies ───────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y \
-    openjdk-17-jre-headless \
+    openjdk-21-jre-headless \
     wget \
     bash \
     procps \
@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Java env ──────────────────────────────────────────────────────────────────
-ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+ENV java-21=/usr/lib/jvm/java-17-openjdk-amd64
 ENV PATH="$JAVA_HOME/bin:$PATH"
 
 # ── Kafka install ─────────────────────────────────────────────────────────────
