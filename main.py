@@ -193,6 +193,39 @@ def cli(debug: bool):
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     )
 
+@cli.command("mcp")
+@click.option("--port", default=8001, help="MCP server port")
+def mcp_server(port: int):
+    """
+    Start MCP server — exposes market as tools for LLM agents.
+    Requires simulation + API to already be running:
+      uv run python main.py api
+    """
+    import api.mcp_server as srv
+    srv.MCP_PORT = port
+    logging.basicConfig(level=logging.INFO)
+    import sys
+    try:
+        srv.http.get("/system/health", timeout=3.0)
+    except Exception:
+        console.print(
+            "[red]Cannot reach API. Start simulation first:[/red]\n"
+            "  uv run python main.py api"
+        )
+        sys.exit(1)
+
+    console.print(
+        f"\n[bold cyan]MCP Server starting on port {port}[/bold cyan]"
+    )
+    console.print(
+        f"[dim]Connect your agent to: "
+        f"http://localhost:{port}/mcp[/dim]\n"
+    )
+
+    import os
+    os.environ["FASTMCP_PORT"] = str(port)
+    srv.mcp.run(transport="streamable-http")
+
 
 @cli.command()
 def sim():

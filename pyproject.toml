@@ -11,6 +11,7 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "dataclasses-json>=0.6.4",
     "pydantic>=2.7.0",
+    "mcp>=1.26.0",
 ]
 
 [project.optional-dependencies]
