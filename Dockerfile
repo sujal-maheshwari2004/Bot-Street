@@ -3,7 +3,7 @@
 FROM python:3.12-slim
 
 # ── Build args ────────────────────────────────────────────────────────────────
-ARG KAFKA_VERSION=3.7.0
+ARG KAFKA_VERSION=3.8.1
 ARG SCALA_VERSION=2.13
 
 # ── System dependencies ───────────────────────────────────────────────────────
@@ -19,13 +19,13 @@ RUN apt-get update && apt-get install -y \
 # ── Java env ──────────────────────────────────────────────────────────────────
 ENV java-21=/usr/lib/jvm/java-17-openjdk-amd64
 ENV PATH="$JAVA_HOME/bin:$PATH"
-
+    
 # ── Kafka install ─────────────────────────────────────────────────────────────
 ENV KAFKA_HOME=/opt/kafka
 ENV PATH="$KAFKA_HOME/bin:$PATH"
 
 RUN wget -q \
-    https://downloads.apache.org/kafka/${KAFKA_VERSION}/kafka_${SCALA_VERSION}-${KAFKA_VERSION}.tgz \
+    https://archive.apache.org/dist/kafka/${KAFKA_VERSION}/kafka_${SCALA_VERSION}-${KAFKA_VERSION}.tgz \
     -O /tmp/kafka.tgz \
     && mkdir -p ${KAFKA_HOME} \
     && tar -xzf /tmp/kafka.tgz \
