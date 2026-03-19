@@ -15,6 +15,11 @@ echo "  App port: $APP_PORT"
 echo "  MCP port: $MCP_PORT"
 echo ""
 
+# ── Kafka JVM tuning — keep under 256MB on free tier ─────────────────────────
+export KAFKA_HEAP_OPTS="-Xmx256m -Xms128m"
+export KAFKA_JVM_PERFORMANCE_OPTS="-client -XX:+UseG1GC -XX:MaxGCPauseMillis=20 -XX:+ExplicitGCInvokesConcurrent"
+export KAFKA_OPTS="-Djava.net.preferIPv4Stack=true"
+
 # ── Step 1: Format Kafka storage ──────────────────────────────────────────────
 echo "[1/5] Formatting Kafka storage (KRaft)..."
 if [ ! -f "$KAFKA_LOG_DIR/meta.properties" ]; then
@@ -35,7 +40,7 @@ $KAFKA_HOME/bin/kafka-server-start.sh \
 
 # ── Step 3: Wait for Kafka ────────────────────────────────────────────────────
 echo "[3/5] Waiting for Kafka to be ready..."
-MAX_RETRIES=30
+MAX_RETRIES=40
 RETRY=0
 until $KAFKA_HOME/bin/kafka-topics.sh \
     --bootstrap-server localhost:9092 \
@@ -43,12 +48,10 @@ until $KAFKA_HOME/bin/kafka-topics.sh \
     RETRY=$((RETRY + 1))
     if [ $RETRY -ge $MAX_RETRIES ]; then
         echo "ERROR: Kafka failed to start after ${MAX_RETRIES} retries."
-        echo "Kafka logs:"
-        cat $KAFKA_LOG_DIR/../logs/server.log 2>/dev/null || true
         exit 1
     fi
     echo "      Waiting... ($RETRY/$MAX_RETRIES)"
-    sleep 2
+    sleep 3
 done
 echo "      Kafka is ready."
 

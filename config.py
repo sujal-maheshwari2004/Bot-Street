@@ -4,7 +4,7 @@ import os
 load_dotenv()
 
 # ── Kafka ─────────────────────────────────────────────────────────────────────
-BOOTSTRAP_SERVERS = os.getenv("BOOTSTRAP_SERVERS", "localhost:9092")
+BOOTSTRAP_SERVERS = os.getenv("BOOTSTRAP_SERVERS", "127.0.0.1:9092")
 
 # ── Topics ────────────────────────────────────────────────────────────────────
 TOPIC_MARKET_ORDERS    = "market-orders"
