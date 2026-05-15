@@ -5,7 +5,6 @@ Directory structure:
     ├── Dockerfile
     ├── LICENSE
     ├── pyproject.toml
-    ├── setup.ps1
     ├── .dockerignore
     ├── api/
     │   ├── __init__.py
@@ -538,99 +537,6 @@ packages = [
     "services",
     "db",
 ]
-
-
-================================================
-FILE: setup.ps1
-================================================
-# Run from the root of the bot-street repo
-# â”€â”€ DELETIONS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-Remove-Item -Force -ErrorAction SilentlyContinue `
-    "main.py", `
-    "docker-compose.yml"
-
-Remove-Item -Recurse -Force -ErrorAction SilentlyContinue `
-    "display", `
-    "user", `
-    "scripts"
-
-Write-Host "Deleted monolith files and dead directories." -ForegroundColor Yellow
-
-# â”€â”€ NEW DIRECTORIES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-$dirs = @(
-    "services",
-    "db",
-    "k8s\kafka",
-    "k8s\deployments",
-    "k8s\services",
-    "k8s\ingress"
-)
-
-foreach ($d in $dirs) {
-    New-Item -ItemType Directory -Force -Path $d | Out-Null
-}
-
-Write-Host "Created new directories." -ForegroundColor Yellow
-
-# â”€â”€ NEW EMPTY FILES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-$files = @(
-    # services â€” thin pod entrypoints
-    "services\entrypoint.py",
-    "services\run_engine.py",
-    "services\run_ledger.py",
-    "services\run_price_feed.py",
-    "services\run_sentiment.py",
-    "services\run_candles.py",
-    "services\run_circuit.py",
-    "services\run_bots.py",
-    "services\run_api.py",
-
-    # db â€” MongoDB layer
-    "db\__init__.py",
-    "db\client.py",
-    "db\trade_store.py",
-    "db\candle_store.py",
-
-    # k8s â€” manifests
-    "k8s\namespace.yaml",
-    "k8s\configmap.yaml",
-    "k8s\secret.yaml",
-    "k8s\kafka\values.yaml",
-    "k8s\deployments\engine.yaml",
-    "k8s\deployments\ledger.yaml",
-    "k8s\deployments\price-feed.yaml",
-    "k8s\deployments\sentiment.yaml",
-    "k8s\deployments\candles.yaml",
-    "k8s\deployments\circuit.yaml",
-    "k8s\deployments\bots.yaml",
-    "k8s\deployments\api.yaml",
-    "k8s\services\api-service.yaml",
-    "k8s\ingress\ingress.yaml"
-)
-
-foreach ($f in $files) {
-    New-Item -ItemType File -Force -Path $f | Out-Null
-}
-
-Write-Host "Scaffolded empty files." -ForegroundColor Yellow
-
-# â”€â”€ SUMMARY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-Write-Host ""
-Write-Host "Done. Repo structure ready:" -ForegroundColor Green
-Write-Host "  Deleted  : main.py, docker-compose.yml, display/, user/, scripts/"
-Write-Host "  Created  : services/ (9 files), db/ (4 files), k8s/ (14 files)"
-Write-Host ""
-Write-Host "Files to edit next (already exist, need changes):" -ForegroundColor Cyan
-Write-Host "  config.py          <- add MONGO_URI, MONGO_DB"
-Write-Host "  engine\trade_logger.py  <- swap file write for MongoDB"
-Write-Host "  api\main.py        <- strip lifespan services, mount MCP"
-Write-Host "  api\mcp_server.py  <- convert to FastAPI sub-app"
-Write-Host "  Dockerfile         <- switch CMD to services/entrypoint.py"
-Write-Host "  pyproject.toml     <- add pymongo"
 
 
 ================================================
@@ -2904,27 +2810,31 @@ data:
 ================================================
 FILE: k8s/namespace.yaml
 ================================================
-[Empty file]
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bot-street
 
 
 ================================================
 FILE: k8s/secret.yaml
 ================================================
 # DO NOT COMMIT with real values.
-# Use GCP Secret Manager or Sealed Secrets in production.
-# To create manually:
+# To create the secret, run:
+#
 #   kubectl create secret generic bot-street-secrets \
-#     --from-literal=MONGO_URI='mongodb+srv://...' \
+#     --from-literal=MONGO_URI='mongodb+srv://user:pass@cluster.mongodb.net/bot-street' \
 #     -n bot-street
+#
+# This file is intentionally left without data.
+# Use GCP Secret Manager or Sealed Secrets in production.
 apiVersion: v1
 kind: Secret
 metadata:
   name: bot-street-secrets
   namespace: bot-street
 type: Opaque
-data:
-  # base64-encoded placeholder â€” replace before deploying
-  MONGO_URI: placeholder
+data: {}
 
 
 ================================================
@@ -2947,7 +2857,7 @@ spec:
     spec:
       containers:
       - name: api
-        image: gcr.io/YOUR_PROJECT/bot-street:latest
+        image: us-central1-docker.pkg.dev/bot-street/bot-street/bot-street:v1
         ports:
         - containerPort: 8000
         env:
@@ -2991,6 +2901,7 @@ spec:
           failureThreshold: 3
 
 
+
 ================================================
 FILE: k8s/deployments/bots.yaml
 ================================================
@@ -3011,7 +2922,7 @@ spec:
     spec:
       containers:
       - name: bots
-        image: gcr.io/YOUR_PROJECT/bot-street:latest
+        image: us-central1-docker.pkg.dev/bot-street/bot-street/bot-street:v1
         env:
         - name: SERVICE
           value: bots
@@ -3044,6 +2955,7 @@ spec:
           periodSeconds: 30
 
 
+
 ================================================
 FILE: k8s/deployments/candles.yaml
 ================================================
@@ -3064,7 +2976,7 @@ spec:
     spec:
       containers:
       - name: candles
-        image: gcr.io/YOUR_PROJECT/bot-street:latest
+        image: us-central1-docker.pkg.dev/bot-street/bot-street/bot-street:v1
         env:
         - name: SERVICE
           value: candles
@@ -3097,6 +3009,7 @@ spec:
           periodSeconds: 30
 
 
+
 ================================================
 FILE: k8s/deployments/circuit.yaml
 ================================================
@@ -3117,7 +3030,7 @@ spec:
     spec:
       containers:
       - name: circuit
-        image: gcr.io/YOUR_PROJECT/bot-street:latest
+        image: us-central1-docker.pkg.dev/bot-street/bot-street/bot-street:v1
         env:
         - name: SERVICE
           value: circuit
@@ -3150,6 +3063,7 @@ spec:
           periodSeconds: 30
 
 
+
 ================================================
 FILE: k8s/deployments/engine.yaml
 ================================================
@@ -3170,7 +3084,7 @@ spec:
     spec:
       containers:
       - name: engine
-        image: gcr.io/YOUR_PROJECT/bot-street:latest
+        image: us-central1-docker.pkg.dev/bot-street/bot-street/bot-street:v1
         env:
         - name: SERVICE
           value: engine
@@ -3203,6 +3117,7 @@ spec:
           periodSeconds: 30
 
 
+
 ================================================
 FILE: k8s/deployments/ledger.yaml
 ================================================
@@ -3223,7 +3138,7 @@ spec:
     spec:
       containers:
       - name: ledger
-        image: gcr.io/YOUR_PROJECT/bot-street:latest
+        image: us-central1-docker.pkg.dev/bot-street/bot-street/bot-street:v1
         env:
         - name: SERVICE
           value: ledger
@@ -3256,6 +3171,7 @@ spec:
           periodSeconds: 30
 
 
+
 ================================================
 FILE: k8s/deployments/price-feed.yaml
 ================================================
@@ -3276,7 +3192,7 @@ spec:
     spec:
       containers:
       - name: price-feed
-        image: gcr.io/YOUR_PROJECT/bot-street:latest
+        image: us-central1-docker.pkg.dev/bot-street/bot-street/bot-street:v1
         env:
         - name: SERVICE
           value: price-feed
@@ -3309,6 +3225,7 @@ spec:
           periodSeconds: 30
 
 
+
 ================================================
 FILE: k8s/deployments/sentiment.yaml
 ================================================
@@ -3329,7 +3246,7 @@ spec:
     spec:
       containers:
       - name: sentiment
-        image: gcr.io/YOUR_PROJECT/bot-street:latest
+        image: us-central1-docker.pkg.dev/bot-street/bot-street/bot-street:v1
         env:
         - name: SERVICE
           value: sentiment
@@ -3360,6 +3277,7 @@ spec:
             command: ["python", "-c", "import sys; sys.exit(0)"]
           initialDelaySeconds: 15
           periodSeconds: 30
+
 
 
 ================================================
@@ -3400,14 +3318,19 @@ spec:
 ================================================
 FILE: k8s/kafka/values.yaml
 ================================================
-# Bitnami Kafka chart â€” KRaft mode, single broker, minimal resources
-# helm repo add bitnami https://charts.bitnami.com/bitnami
-# helm install bot-street-kafka bitnami/kafka -f k8s/kafka/values.yaml -n bot-street
-
+# Bitnami Kafka chart â€” KRaft mode, single broker, no auth (internal cluster only)
 kraft:
   enabled: true
 
 replicaCount: 1
+
+listeners:
+  client:
+    protocol: PLAINTEXT
+  controller:
+    protocol: PLAINTEXT
+  interbroker:
+    protocol: PLAINTEXT
 
 service:
   type: ClusterIP
@@ -3426,11 +3349,9 @@ resources:
     cpu: 1000m
     memory: 1Gi
 
-# Disable zookeeper â€” KRaft mode only
 zookeeper:
   enabled: false
 
-# Topic auto-creation disabled â€” our code creates topics explicitly
 extraConfig: |
   auto.create.topics.enable=false
   log.retention.hours=24

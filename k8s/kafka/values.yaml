@@ -1,4 +1,7 @@
-# Bitnami Kafka chart — KRaft mode, single broker, no auth (internal cluster only)
+global:
+  security:
+    allowInsecureImages: false
+
 kraft:
   enabled: true
 
@@ -20,14 +23,6 @@ service:
 persistence:
   enabled: true
   size: 8Gi
-
-resources:
-  requests:
-    cpu: 250m
-    memory: 512Mi
-  limits:
-    cpu: 1000m
-    memory: 1Gi
 
 zookeeper:
   enabled: false

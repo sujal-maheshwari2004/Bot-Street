@@ -1,6 +1,7 @@
 import os
 import sys
-import importlib
+
+sys.path.insert(0, "/app")
 
 SERVICE = os.getenv("SERVICE", "").lower()
 
@@ -19,5 +20,6 @@ if SERVICE not in runners:
     print(f"Unknown SERVICE={SERVICE!r}. Valid: {list(runners)}")
     sys.exit(1)
 
+import importlib
 mod = importlib.import_module(runners[SERVICE])
 mod.main()
