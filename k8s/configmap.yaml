@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bot-street-config
+  namespace: bot-street
+data:
+  BOOTSTRAP_SERVERS: "bot-street-kafka:9092"
+  MONGO_DB: "bot-street"
+  PYTHONUNBUFFERED: "1"

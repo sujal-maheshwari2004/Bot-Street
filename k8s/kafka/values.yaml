@@ -1,0 +1,37 @@
+# Bitnami Kafka chart — KRaft mode, single broker, minimal resources
+# helm repo add bitnami https://charts.bitnami.com/bitnami
+# helm install bot-street-kafka bitnami/kafka -f k8s/kafka/values.yaml -n bot-street
+
+kraft:
+  enabled: true
+
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  ports:
+    client: 9092
+
+persistence:
+  enabled: true
+  size: 8Gi
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+# Disable zookeeper — KRaft mode only
+zookeeper:
+  enabled: false
+
+# Topic auto-creation disabled — our code creates topics explicitly
+extraConfig: |
+  auto.create.topics.enable=false
+  log.retention.hours=24
+  offsets.topic.replication.factor=1
+  transaction.state.log.replication.factor=1
+  transaction.state.log.min.isr=1

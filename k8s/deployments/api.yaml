@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: bot-street
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+      - name: api
+        image: gcr.io/YOUR_PROJECT/bot-street:latest
+        ports:
+        - containerPort: 8000
+        env:
+        - name: SERVICE
+          value: api
+        - name: BOOTSTRAP_SERVERS
+          valueFrom:
+            configMapKeyRef:
+              name: bot-street-config
+              key: BOOTSTRAP_SERVERS
+        - name: MONGO_URI
+          valueFrom:
+            secretKeyRef:
+              name: bot-street-secrets
+              key: MONGO_URI
+        - name: MONGO_DB
+          valueFrom:
+            configMapKeyRef:
+              name: bot-street-config
+              key: MONGO_DB
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+        readinessProbe:
+          httpGet:
+            path: /system/health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /system/health
+            port: 8000
+          initialDelaySeconds: 20
+          periodSeconds: 30
+          failureThreshold: 3

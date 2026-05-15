@@ -1,0 +1,30 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bot-street-ingress
+  namespace: bot-street
+  annotations:
+    kubernetes.io/ingress.class: "gce"
+    kubernetes.io/ingress.allow-http: "false"
+    networking.gke.io/managed-certificates: "bot-street-cert"
+spec:
+  rules:
+  - host: bot-street-api.sujalmaheshwari.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: api-service
+            port:
+              number: 80
+---
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: bot-street-cert
+  namespace: bot-street
+spec:
+  domains:
+  - bot-street-api.sujalmaheshwari.com

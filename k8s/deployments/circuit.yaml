@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: circuit
+  namespace: bot-street
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: circuit
+  template:
+    metadata:
+      labels:
+        app: circuit
+    spec:
+      containers:
+      - name: circuit
+        image: gcr.io/YOUR_PROJECT/bot-street:latest
+        env:
+        - name: SERVICE
+          value: circuit
+        - name: BOOTSTRAP_SERVERS
+          valueFrom:
+            configMapKeyRef:
+              name: bot-street-config
+              key: BOOTSTRAP_SERVERS
+        - name: MONGO_URI
+          valueFrom:
+            secretKeyRef:
+              name: bot-street-secrets
+              key: MONGO_URI
+        - name: MONGO_DB
+          valueFrom:
+            configMapKeyRef:
+              name: bot-street-config
+              key: MONGO_DB
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        livenessProbe:
+          exec:
+            command: ["python", "-c", "import sys; sys.exit(0)"]
+          initialDelaySeconds: 15
+          periodSeconds: 30
