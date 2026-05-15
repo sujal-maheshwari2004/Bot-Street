@@ -5,53 +5,49 @@ from api.models import PortfolioResponse, HoldingResponse
 
 router = APIRouter(prefix="/portfolio", tags=["Portfolio"])
 
-_ledger      = None
-_price_feed  = None
+_cache = None
+
+
+def inject_cache(cache):
+    global _cache
+    _cache = cache
 
 
 def inject(ledger, price_feed):
-    global _ledger, _price_feed
-    _ledger     = ledger
-    _price_feed = price_feed
+    pass
 
 
 @router.get("/{client_id}", response_model=PortfolioResponse)
 def get_portfolio(client_id: str):
-    """Holdings, cash, P&L and risk metrics for a client."""
-    if _ledger is None:
-        raise HTTPException(status_code=503, detail="Ledger not running.")
+    if _cache is None:
+        raise HTTPException(status_code=503, detail="Cache not ready.")
 
-    portfolio = _ledger.get_portfolio(client_id)
-    if portfolio is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Client '{client_id}' not found."
-        )
+    port = _cache.portfolios.get(client_id)
+    if port is None:
+        raise HTTPException(status_code=404, detail=f"Client '{client_id}' not found.")
 
-    prices = _price_feed.get_all_prices() if _price_feed else {}
-    snap   = portfolio.to_snapshot(prices)
+    prices = dict(_cache.prices)
+    raw_holdings = port.get("holdings", {})
+    avg_cost     = port.get("avg_cost", {})
 
     holdings = []
-    for symbol, qty in snap.holdings.items():
-        avg   = snap.avg_cost.get(symbol, 0)
-        curr  = prices.get(symbol)
-        unr   = (curr - avg) * qty if curr else None
+    for sym, qty in raw_holdings.items():
+        avg  = avg_cost.get(sym, 0.0)
+        curr = prices.get(sym)
+        unr  = round((curr - avg) * qty, 2) if curr else None
         holdings.append(HoldingResponse(
-            symbol     = symbol,
-            quantity   = qty,
-            avg_cost   = avg,
-            curr_price = curr,
-            unrealised = round(unr, 2) if unr is not None else None,
+            symbol=sym, quantity=qty,
+            avg_cost=avg, curr_price=curr, unrealised=unr,
         ))
 
     return PortfolioResponse(
         client_id      = client_id,
         holdings       = holdings,
-        cash           = snap.cash,
-        realised_pnl   = snap.realised_pnl,
-        unrealised_pnl = snap.unrealised_pnl,
-        sharpe         = snap.sharpe,
-        max_drawdown   = snap.max_drawdown,
-        var_95         = snap.var_95,
-        trade_count    = portfolio._trade_count,
+        cash           = port.get("cash", 0.0),
+        realised_pnl   = port.get("realised_pnl", 0.0),
+        unrealised_pnl = port.get("unrealised_pnl", 0.0),
+        sharpe         = port.get("sharpe"),
+        max_drawdown   = port.get("max_drawdown"),
+        var_95         = port.get("var_95"),
+        trade_count    = port.get("trade_count", 0),
     )

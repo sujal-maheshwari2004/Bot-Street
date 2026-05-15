@@ -1,120 +1,133 @@
 """
-FastAPI Application — Market Simulator REST API
+FastAPI Application — Market Simulator REST API (K8s edition)
 
-All market services are started as background threads when the
-API starts. The API then exposes their state via REST endpoints.
+In K8s each service runs in its own pod. This pod only:
+  - Consumes Kafka topics to build in-memory caches
+  - Serves the REST API
+  - Mounts the MCP server at /mcp
+
+All other services (engines, bots, ledger, etc.) run as separate
+Deployments and communicate exclusively via Kafka.
 """
 
 import logging
 import threading
 from contextlib import asynccontextmanager
+from collections import defaultdict
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from core.kafka_client import ensure_topics
-from engine.matching_engine import run_all_engines
-from engine.portfolio_ledger import PortfolioLedger
-from engine.circuit_breaker import CircuitBreaker
-from engine.candle_aggregator import CandleAggregator
-from engine.trade_logger import TradeLogger
-from market.price_feed import PriceFeed
-from market.sentiment_engine import SentimentEngine
-from participants.market_maker import MarketMakerBot
-from participants.momentum_bot import MomentumBot
-from participants.random_bot import RandomBot
-from participants.mean_reversion_bot import MeanReversionBot
-
+from core.kafka_client import MarketConsumer, ensure_topics
+from config import (
+    TOPIC_PRICE_UPDATE, TOPIC_CANDLES, TOPIC_MARKET_SENTIMENT,
+    TOPIC_PORTFOLIO_SNAP, TOPIC_MARKET_HALT,
+    SYMBOL_LIST, SYMBOLS,
+)
 from api.routes import orders, market, portfolio, market_status
 
 logger = logging.getLogger(__name__)
 
-# ── Global service instances ──────────────────────────────────────────────────
-# Shared across routes via injection
 
-_services = {}
+# ── In-memory cache ───────────────────────────────────────────────────────────
+
+class APICache:
+    def __init__(self):
+        self.prices     : dict[str, float] = {s: SYMBOLS[s][1] for s in SYMBOL_LIST}
+        self.sentiment  : dict[str, dict]  = {}
+        self.candles    : dict[str, list]  = defaultdict(list)
+        self.portfolios : dict[str, dict]  = {}
+        self.halted     : dict[str, bool]  = {s: False for s in SYMBOL_LIST}
+        self._lock = threading.Lock()
+
+    def update_price(self, msg: dict):
+        symbol = msg.get("symbol")
+        price  = msg.get("price")
+        if symbol and price:
+            with self._lock:
+                self.prices[symbol] = price
+
+    def update_sentiment(self, msg: dict):
+        symbol = msg.get("symbol")
+        if symbol:
+            with self._lock:
+                self.sentiment[symbol] = msg
+
+    def update_candle(self, msg: dict):
+        symbol = msg.get("symbol")
+        if symbol:
+            with self._lock:
+                self.candles[symbol].append(msg)
+                if len(self.candles[symbol]) > 100:
+                    self.candles[symbol].pop(0)
+
+    def update_portfolio(self, msg: dict):
+        client_id = msg.get("client_id")
+        if client_id:
+            with self._lock:
+                self.portfolios[client_id] = msg
+
+    def update_halt(self, msg: dict):
+        symbol = msg.get("symbol")
+        if symbol:
+            with self._lock:
+                self.halted[symbol] = msg.get("status") == "halted"
 
 
-def _start_in_thread(target, name: str):
-    t = threading.Thread(target=target, name=name, daemon=True)
+cache = APICache()
+
+
+# ── Kafka consumer threads ────────────────────────────────────────────────────
+
+def _start_consumer(group_id: str, topics: list[str], handler, name: str):
+    consumer = MarketConsumer(group_id=group_id, topics=topics, offset="latest")
+
+    def loop():
+        while True:
+            msg = consumer.poll_once(timeout=0.5)
+            if msg:
+                try:
+                    handler(msg)
+                except Exception as e:
+                    logger.error(f"[api-cache:{name}] handler error: {e}")
+
+    t = threading.Thread(target=loop, name=f"api-cache-{name}", daemon=True)
     t.start()
     return t
 
 
+# ── Lifespan ──────────────────────────────────────────────────────────────────
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Startup: bootstrap Kafka topics, start all services.
-    Shutdown: stop all services cleanly.
-    """
-    logger.info("[api] starting market simulator services...")
-
-    # ── Kafka topics ──────────────────────────────────────────────────
+    logger.info("[api] starting Kafka cache consumers...")
     ensure_topics()
 
-    # ── Core engines ──────────────────────────────────────────────────
-    ledger    = PortfolioLedger()
-    cb        = CircuitBreaker()
-    candles   = CandleAggregator()
-    trade_log = TradeLogger()
-    price_feed = PriceFeed()
-    sentiment  = SentimentEngine()
+    _start_consumer("api-cache-prices",    [TOPIC_PRICE_UPDATE],     cache.update_price,     "prices")
+    _start_consumer("api-cache-sentiment", [TOPIC_MARKET_SENTIMENT], cache.update_sentiment, "sentiment")
+    _start_consumer("api-cache-candles",   [TOPIC_CANDLES],          cache.update_candle,    "candles")
+    _start_consumer("api-cache-portfolio", [TOPIC_PORTFOLIO_SNAP],   cache.update_portfolio, "portfolio")
+    _start_consumer("api-cache-halts",     [TOPIC_MARKET_HALT],      cache.update_halt,      "halts")
 
-    # ── Matching engines (one per symbol) ─────────────────────────────
-    engines, _ = run_all_engines()
+    # inject cache into routes and MCP
+    market.inject_cache(cache)
+    portfolio.inject_cache(cache)
+    market_status.inject_cache(cache)
 
-    # ── Bots ──────────────────────────────────────────────────────────
-    bots = [
-        MarketMakerBot(),
-        MomentumBot(),
-        RandomBot(),
-        MeanReversionBot(),
-    ]
+    from api.mcp_server import set_cache
+    set_cache(cache)
 
-    # ── Start all services in background threads ───────────────────────
-    _start_in_thread(ledger.start,    "ledger")
-    _start_in_thread(cb.start,        "circuit-breaker")
-    _start_in_thread(candles.start,   "candle-aggregator")
-    _start_in_thread(trade_log.start, "trade-logger")
-    _start_in_thread(price_feed.start,"price-feed")
-    _start_in_thread(sentiment.start, "sentiment-engine")
-
-    for bot in bots:
-        _start_in_thread(bot.start, bot.client_id)
-
-    # store for shutdown
-    _services.update({
-        "ledger"    : ledger,
-        "cb"        : cb,
-        "candles"   : candles,
-        "price_feed": price_feed,
-        "sentiment" : sentiment,
-        "engines"   : engines,
-        "bots"      : bots,
-    })
-
-    # ── Inject into routes ─────────────────────────────────────────────
-    market.inject(price_feed, candles, sentiment, engines)
-    portfolio.inject(ledger, price_feed)
-    market_status.inject(cb, ledger, price_feed)
-
-    logger.info("[api] all services started")
+    logger.info("[api] cache consumers running")
     yield
-
-    # ── Shutdown ───────────────────────────────────────────────────────
-    logger.info("[api] shutting down...")
-    for svc in [ledger, cb, candles, trade_log, price_feed, sentiment]:
-        svc.stop()
-    for bot in bots:
-        bot.stop()
+    logger.info("[api] shutting down")
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
 app = FastAPI(
-    title       = "Market Simulator API",
+    title       = "Bot Street API",
     description = "Kafka-backed algorithmic market simulator",
-    version     = "0.1.0",
+    version     = "0.2.0",
     lifespan    = lifespan,
 )
 
@@ -126,17 +139,24 @@ app.add_middleware(
 )
 
 # ── Routers ───────────────────────────────────────────────────────────────────
+
 app.include_router(orders.router)
 app.include_router(market.router)
 app.include_router(portfolio.router)
 app.include_router(market_status.router)
 
+# ── MCP sub-app ───────────────────────────────────────────────────────────────
+
+from api.mcp_server import mcp
+app.mount("/mcp", mcp.streamable_http_app())
+
 
 @app.get("/")
 def root():
     return {
-        "name"   : "Market Simulator API",
-        "version": "0.1.0",
+        "name"   : "Bot Street API",
+        "version": "0.2.0",
         "docs"   : "/docs",
         "health" : "/system/health",
+        "mcp"    : "/mcp",
     }

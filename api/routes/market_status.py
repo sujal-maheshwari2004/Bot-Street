@@ -2,27 +2,25 @@
 
 from fastapi import APIRouter, HTTPException
 from api.models import MarketStatusResponse, LeaderboardEntry, HealthResponse
-from config import SYMBOL_LIST, SYMBOLS
+from config import SYMBOL_LIST, SYMBOLS, BOOTSTRAP_SERVERS, ALL_TOPICS
 from core.kafka_client import AdminClient
-from config import BOOTSTRAP_SERVERS, ALL_TOPICS
 
 router = APIRouter(prefix="/system", tags=["System"])
 
-_circuit_breaker = None
-_ledger          = None
-_price_feed      = None
+_cache = None
+
+
+def inject_cache(cache):
+    global _cache
+    _cache = cache
 
 
 def inject(circuit_breaker, ledger, price_feed):
-    global _circuit_breaker, _ledger, _price_feed
-    _circuit_breaker = circuit_breaker
-    _ledger          = ledger
-    _price_feed      = price_feed
+    pass
 
 
 @router.get("/health", response_model=HealthResponse)
 def health():
-    """Kafka connectivity and topic status."""
     try:
         admin = AdminClient({"bootstrap.servers": BOOTSTRAP_SERVERS})
         existing = list(admin.list_topics(timeout=5).topics.keys())
@@ -41,18 +39,14 @@ def health():
 
 @router.get("/status", response_model=list[MarketStatusResponse])
 def market_status():
-    """Halt/active status for all symbols."""
-    prices = _price_feed.get_all_prices() if _price_feed else {}
+    prices = dict(_cache.prices) if _cache else {}
+    halted = dict(_cache.halted) if _cache else {}
     result = []
     for symbol in SYMBOL_LIST:
-        halted = (
-            _circuit_breaker.is_halted(symbol)
-            if _circuit_breaker else False
-        )
         name, _, profile = SYMBOLS[symbol]
         result.append(MarketStatusResponse(
             symbol  = symbol,
-            halted  = halted,
+            halted  = halted.get(symbol, False),
             name    = name,
             price   = prices.get(symbol),
             profile = profile,
@@ -62,11 +56,29 @@ def market_status():
 
 @router.get("/leaderboard", response_model=list[LeaderboardEntry])
 def leaderboard():
-    """All participants ranked by total P&L."""
-    if _ledger is None:
-        raise HTTPException(status_code=503, detail="Ledger not running.")
+    if _cache is None:
+        raise HTTPException(status_code=503, detail="Cache not ready.")
 
-    rows = _ledger.get_leaderboard()
+    portfolios = dict(_cache.portfolios)
+    prices     = dict(_cache.prices)
+
+    rows = []
+    for client_id, port in portfolios.items():
+        r = port.get("realised_pnl", 0.0)
+        u = port.get("unrealised_pnl", 0.0)
+        rows.append({
+            "client_id"    : client_id,
+            "total_pnl"    : round(r + u, 2),
+            "realised_pnl" : r,
+            "unrealised_pnl": u,
+            "cash"         : port.get("cash", 0.0),
+            "sharpe"       : port.get("sharpe"),
+            "max_drawdown" : port.get("max_drawdown"),
+            "trade_count"  : port.get("trade_count", 0),
+        })
+
+    rows.sort(key=lambda r: r["total_pnl"], reverse=True)
+
     return [
         LeaderboardEntry(
             rank           = i + 1,
