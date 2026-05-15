@@ -6,6 +6,10 @@ load_dotenv()
 # ── Kafka ─────────────────────────────────────────────────────────────────────
 BOOTSTRAP_SERVERS = os.getenv("BOOTSTRAP_SERVERS", "127.0.0.1:9092")
 
+# ── MongoDB ───────────────────────────────────────────────────────────────────
+MONGO_URI = os.getenv("MONGO_URI", "")
+MONGO_DB  = os.getenv("MONGO_DB", "bot-street")
+
 # ── Topics ────────────────────────────────────────────────────────────────────
 TOPIC_MARKET_ORDERS    = "market-orders"
 TOPIC_TRADE_EXECUTED   = "trade-executed"
