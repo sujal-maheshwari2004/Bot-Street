@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: api
-        image: gcr.io/YOUR_PROJECT/bot-street:latest
+        image: us-central1-docker.pkg.dev/bot-street/bot-street/bot-street:v1
         ports:
         - containerPort: 8000
         env:
