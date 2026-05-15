@@ -1,38 +1,30 @@
 """
-Trade Logger — Appends every trade to a JSONL file
+Trade Logger — Writes every trade to MongoDB Atlas
 
-Simple but valuable:
-  - Free audit trail of all market activity
-  - Can be replayed into Kafka for backtesting
-  - Useful for debugging sentiment + indicator logic
+Consumes trade-executed, persists each trade to the `trades` collection.
+Interface identical to the old file-based version — drop-in replacement.
 
-JSONL format: one JSON object per line
-  {"trade_id": "...", "symbol": "PEAR", "price": 151.0, ...}
-  {"trade_id": "...", "symbol": "TSLA", "price": 90.2,  ...}
+Benefits over trades.jsonl:
+  - Survives pod restarts
+  - Queryable by symbol, time range, participant
+  - Portfolio ledger can replay from Atlas on startup
 """
 
-import json
 import logging
-from pathlib import Path
-from time import time
-
 from config import TOPIC_TRADE_EXECUTED
 from core.kafka_client import MarketConsumer
+from db.trade_store import insert_trade
 
 logger = logging.getLogger(__name__)
-
-LOG_PATH = Path("data/trades.jsonl")
 
 
 class TradeLogger:
     """
-    Consumes trade-executed and appends to data/trades.jsonl.
+    Consumes trade-executed and writes to MongoDB trades collection.
     Lightweight — no producer needed.
     """
 
     def __init__(self):
-        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-
         self._consumer = MarketConsumer(
             group_id="trade-logger",
             topics=[TOPIC_TRADE_EXECUTED],
@@ -40,8 +32,7 @@ class TradeLogger:
         )
         self._running = False
         self._count   = 0
-
-        logger.info(f"[trade-logger] logging trades to {LOG_PATH}")
+        logger.info("[trade-logger] initialised — writing to MongoDB")
 
     def start(self):
         self._running = True
@@ -56,15 +47,13 @@ class TradeLogger:
         self._running = False
 
     def _run_loop(self):
-        with open(LOG_PATH, "a", encoding="utf-8") as f:
-            while self._running:
-                msg = self._consumer.poll_once(timeout=0.5)
-                if msg is None:
-                    continue
+        while self._running:
+            msg = self._consumer.poll_once(timeout=0.5)
+            if msg is None:
+                continue
 
-                f.write(json.dumps(msg) + "\n")
-                f.flush()   # ensure write on every trade
-                self._count += 1
+            insert_trade(msg)
+            self._count += 1
 
-                if self._count % 100 == 0:
-                    logger.info(f"[trade-logger] {self._count} trades logged")
+            if self._count % 100 == 0:
+                logger.info(f"[trade-logger] {self._count} trades written to Atlas")
