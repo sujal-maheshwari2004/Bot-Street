@@ -358,6 +358,10 @@ load_dotenv()
 # â”€â”€ Kafka â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 BOOTSTRAP_SERVERS = os.getenv("BOOTSTRAP_SERVERS", "127.0.0.1:9092")
 
+# â”€â”€ MongoDB â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+MONGO_URI = os.getenv("MONGO_URI", "")
+MONGO_DB  = os.getenv("MONGO_DB", "bot-street")
+
 # â”€â”€ Topics â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 TOPIC_MARKET_ORDERS    = "market-orders"
 TOPIC_TRADE_EXECUTED   = "trade-executed"
@@ -501,18 +505,17 @@ FILE: pyproject.toml
 ================================================
 [project]
 name = "bot-street"
-version = "0.1.0"
+version = "0.2.0"
 requires-python = ">=3.12"
 dependencies = [
     "confluent-kafka>=2.4.0",
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.29.0",
-    "rich>=13.7.1",
-    "click>=8.1.7",
     "python-dotenv>=1.0.1",
     "dataclasses-json>=0.6.4",
     "pydantic>=2.7.0",
     "mcp>=1.26.0",
+    "pymongo>=4.7.0",
 ]
 
 [project.optional-dependencies]
@@ -532,10 +535,9 @@ packages = [
     "market",
     "participants",
     "api",
-    "user",
-    "display",
+    "services",
+    "db",
 ]
-
 
 
 ================================================
@@ -661,792 +663,13 @@ FILE: api/__init__.py
 ================================================
 FILE: api/main.py
 ================================================
-"""
-FastAPI Application â€” Market Simulator REST API
-
-All market services are started as background threads when the
-API starts. The API then exposes their state via REST endpoints.
-"""
-
-import logging
-import threading
-from contextlib import asynccontextmanager
-
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-
-from core.kafka_client import ensure_topics
-from engine.matching_engine import run_all_engines
-from engine.portfolio_ledger import PortfolioLedger
-from engine.circuit_breaker import CircuitBreaker
-from engine.candle_aggregator import CandleAggregator
-from engine.trade_logger import TradeLogger
-from market.price_feed import PriceFeed
-from market.sentiment_engine import SentimentEngine
-from participants.market_maker import MarketMakerBot
-from participants.momentum_bot import MomentumBot
-from participants.random_bot import RandomBot
-from participants.mean_reversion_bot import MeanReversionBot
-
-from api.routes import orders, market, portfolio, market_status
-
-logger = logging.getLogger(__name__)
-
-# â”€â”€ Global service instances â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# Shared across routes via injection
-
-_services = {}
-
-
-def _start_in_thread(target, name: str):
-    t = threading.Thread(target=target, name=name, daemon=True)
-    t.start()
-    return t
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """
-    Startup: bootstrap Kafka topics, start all services.
-    Shutdown: stop all services cleanly.
-    """
-    logger.info("[api] starting market simulator services...")
-
-    # â”€â”€ Kafka topics â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    ensure_topics()
-
-    # â”€â”€ Core engines â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    ledger    = PortfolioLedger()
-    cb        = CircuitBreaker()
-    candles   = CandleAggregator()
-    trade_log = TradeLogger()
-    price_feed = PriceFeed()
-    sentiment  = SentimentEngine()
-
-    # â”€â”€ Matching engines (one per symbol) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    engines, _ = run_all_engines()
-
-    # â”€â”€ Bots â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    bots = [
-        MarketMakerBot(),
-        MomentumBot(),
-        RandomBot(),
-        MeanReversionBot(),
-    ]
-
-    # â”€â”€ Start all services in background threads â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    _start_in_thread(ledger.start,    "ledger")
-    _start_in_thread(cb.start,        "circuit-breaker")
-    _start_in_thread(candles.start,   "candle-aggregator")
-    _start_in_thread(trade_log.start, "trade-logger")
-    _start_in_thread(price_feed.start,"price-feed")
-    _start_in_thread(sentiment.start, "sentiment-engine")
-
-    for bot in bots:
-        _start_in_thread(bot.start, bot.client_id)
-
-    # store for shutdown
-    _services.update({
-        "ledger"    : ledger,
-        "cb"        : cb,
-        "candles"   : candles,
-        "price_feed": price_feed,
-        "sentiment" : sentiment,
-        "engines"   : engines,
-        "bots"      : bots,
-    })
-
-    # â”€â”€ Inject into routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    market.inject(price_feed, candles, sentiment, engines)
-    portfolio.inject(ledger, price_feed)
-    market_status.inject(cb, ledger, price_feed)
-
-    logger.info("[api] all services started")
-    yield
-
-    # â”€â”€ Shutdown â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    logger.info("[api] shutting down...")
-    for svc in [ledger, cb, candles, trade_log, price_feed, sentiment]:
-        svc.stop()
-    for bot in bots:
-        bot.stop()
-
-
-# â”€â”€ App â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-app = FastAPI(
-    title       = "Market Simulator API",
-    description = "Kafka-backed algorithmic market simulator",
-    version     = "0.1.0",
-    lifespan    = lifespan,
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# â”€â”€ Routers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-app.include_router(orders.router)
-app.include_router(market.router)
-app.include_router(portfolio.router)
-app.include_router(market_status.router)
-
-
-@app.get("/")
-def root():
-    return {
-        "name"   : "Market Simulator API",
-        "version": "0.1.0",
-        "docs"   : "/docs",
-        "health" : "/system/health",
-    }
+[Binary file]
 
 
 ================================================
 FILE: api/mcp_server.py
 ================================================
-"""
-MCP Server â€” Exposes Market Simulator as Tools for LLM Agents
-
-Wraps the FastAPI REST endpoints as MCP tools so any
-MCP-compatible agent (Claude, GPT, etc.) can trade in the market.
-
-An agent connected to this server can:
-  - Read live market data (prices, order book, candles, indicators)
-  - Analyse sentiment and microstructure
-  - Place and monitor orders
-  - Track its own portfolio and P&L
-  - Compete against the bots on the leaderboard
-
-Architecture:
-  LLM Agent
-      â”‚ MCP protocol
-      â–¼
-  MCP Server (this file)
-      â”‚ HTTP
-      â–¼
-  FastAPI (api/main.py)
-      â”‚ Kafka
-      â–¼
-  Market Simulator
-
-Usage:
-  1. Start the simulation:
-       uv run python main.py api
-
-  2. Start the MCP server:
-       uv run python api/mcp_server.py
-
-  3. Connect your MCP client to:
-       http://localhost:8001/mcp
-
-  4. The agent can now trade using the tools below.
-"""
-
-import json
-import logging
-from typing import Any
-
-import httpx
-from mcp.server.fastmcp import FastMCP
-
-logger = logging.getLogger(__name__)
-
-# â”€â”€ Config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-API_BASE    = "http://localhost:8000"
-MCP_PORT    = 8001
-MCP_NAME    = "market-simulator"
-
-# default agent client_id â€” each agent should use a unique one
-DEFAULT_AGENT_ID = "agent-claude"
-
-# â”€â”€ MCP Server â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-mcp = FastMCP(MCP_NAME)
-http = httpx.Client(base_url=API_BASE, timeout=5.0)
-
-
-def _get(path: str) -> Any:
-    """GET from FastAPI â€” raises on error."""
-    resp = http.get(path)
-    resp.raise_for_status()
-    return resp.json()
-
-
-def _post(path: str, body: dict) -> Any:
-    """POST to FastAPI â€” raises on error."""
-    resp = http.post(path, json=body)
-    resp.raise_for_status()
-    return resp.json()
-
-
-# â”€â”€ Market Data Tools â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-@mcp.tool()
-def get_prices() -> str:
-    """
-    Get current prices for all symbols in the market.
-
-    Returns a dict of symbol â†’ current price.
-    Use this to get a quick overview of where all symbols are trading.
-
-    Example response:
-      {"PEAR": 151.23, "TSLA": 89.50, "LBRY": 312.10, ...}
-    """
-    try:
-        data = _get("/market/all/prices")
-        lines = [f"Current Prices:"]
-        for symbol, price in data.items():
-            lines.append(f"  {symbol}: ${price:.2f}")
-        return "\n".join(lines)
-    except Exception as e:
-        return f"Error fetching prices: {e}"
-
-
-@mcp.tool()
-def get_order_book(symbol: str, levels: int = 5) -> str:
-    """
-    Get the current order book depth for a symbol.
-
-    Shows the top N bids (buyers) and asks (sellers) with quantities.
-    The spread between best bid and best ask is the cost of trading.
-
-    Args:
-        symbol: Trading symbol e.g. PEAR, TSLA, LBRY, RNFR, MHRD
-        levels: Number of price levels to show (default 5, max 20)
-
-    The order book tells you:
-      - Where buyers are willing to buy (bids)
-      - Where sellers are willing to sell (asks)
-      - How much liquidity exists at each level
-      - The current spread (ask - bid)
-    """
-    try:
-        data = _get(f"/market/{symbol}/orderbook?levels={levels}")
-        lines = [f"Order Book â€” {symbol}"]
-        lines.append(f"  Mid: ${data.get('mid', 0):.2f}  "
-                     f"Spread: ${data.get('spread', 0):.3f}")
-        lines.append("")
-        lines.append("  ASKS (sellers):")
-        for ask in reversed(data.get("asks", [])):
-            bar = "â–ˆ" * min(ask["quantity"], 20)
-            lines.append(f"    ${ask['price']:.2f}  {bar} {ask['quantity']}")
-        lines.append("  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
-        lines.append("  BIDS (buyers):")
-        for bid in data.get("bids", []):
-            bar = "â–ˆ" * min(bid["quantity"], 20)
-            lines.append(f"    ${bid['price']:.2f}  {bar} {bid['quantity']}")
-        return "\n".join(lines)
-    except Exception as e:
-        return f"Error fetching order book for {symbol}: {e}"
-
-
-@mcp.tool()
-def get_indicators(symbol: str) -> str:
-    """
-    Get all technical indicators for a symbol.
-
-    Returns current values of:
-      RSI        Relative Strength Index (0-100)
-                   >70 = overbought, <30 = oversold
-      MACD       Moving Average Convergence Divergence
-                   MACD > Signal = bullish momentum
-      BB         Bollinger Bands upper and lower
-                   Price near upper = overbought territory
-      VWAP       Volume Weighted Average Price
-                   Price above VWAP = bullish, below = bearish
-      EMA 9/21   Short and long exponential moving averages
-                   EMA9 > EMA21 = uptrend (golden cross)
-      OFI        Order Flow Imbalance (-1 to +1)
-                   Positive = buy pressure, negative = sell pressure
-      Spread     Current bid-ask spread in dollars
-
-    Args:
-        symbol: Trading symbol e.g. PEAR, TSLA, LBRY, RNFR, MHRD
-    """
-    try:
-        data = _get(f"/market/{symbol}/price")
-        lines = [f"Indicators â€” {symbol}  (Price: ${data['price']:.2f})"]
-        lines.append("")
-
-        def fmt(val):
-            return f"{val:.3f}" if val is not None else "â€”"
-
-        rsi = data.get("rsi")
-        rsi_signal = ""
-        if rsi:
-            if rsi > 70:   rsi_signal = " âš  OVERBOUGHT"
-            elif rsi < 30: rsi_signal = " âš  OVERSOLD"
-
-        lines.append(f"  RSI (14):      {fmt(rsi)}{rsi_signal}")
-        lines.append(f"  MACD:          {fmt(data.get('macd'))}"
-                     f"  Signal: {fmt(data.get('macd_signal'))}")
-
-        macd = data.get("macd")
-        sig  = data.get("macd_signal")
-        if macd and sig:
-            lines.append(f"  MACD Signal:   "
-                         f"{'BULLISH â–²' if macd > sig else 'BEARISH â–¼'}")
-
-        lines.append(f"  BB Upper:      {fmt(data.get('bb_upper'))}")
-        lines.append(f"  BB Lower:      {fmt(data.get('bb_lower'))}")
-        lines.append(f"  VWAP:          {fmt(data.get('vwap'))}")
-
-        ema_s = data.get("ema_short")
-        ema_l = data.get("ema_long")
-        lines.append(f"  EMA 9:         {fmt(ema_s)}")
-        lines.append(f"  EMA 21:        {fmt(ema_l)}")
-        if ema_s and ema_l:
-            lines.append(f"  EMA Cross:     "
-                         f"{'UPTREND â–²' if ema_s > ema_l else 'DOWNTREND â–¼'}")
-
-        ofi = data.get("ofi")
-        lines.append(f"  OFI:           {fmt(ofi)}"
-                     f"{'  (buy pressure)' if ofi and ofi > 0.3 else ''}"
-                     f"{'  (sell pressure)' if ofi and ofi < -0.3 else ''}")
-        lines.append(f"  Spread:        ${fmt(data.get('spread'))}")
-        lines.append(f"  Volume:        {data.get('volume', 0)}")
-
-        return "\n".join(lines)
-    except Exception as e:
-        return f"Error fetching indicators for {symbol}: {e}"
-
-
-@mcp.tool()
-def get_sentiment(symbol: str) -> str:
-    """
-    Get current market sentiment for a symbol.
-
-    Sentiment is derived from the rolling buy/sell ratio over
-    the last 20 trades. It tells you which direction the market
-    is leaning and how strongly.
-
-    Args:
-        symbol: Trading symbol e.g. PEAR, TSLA, LBRY, RNFR, MHRD
-
-    Returns:
-      sentiment:  bullish / bearish / neutral
-      strength:   0.0 (weak) to 1.0 (very strong)
-      buy_ratio:  fraction of volume that was buying (0.0 to 1.0)
-      velocity:   trades per second (high = active market)
-
-    Trading interpretation:
-      bullish + strength > 0.7 â†’ strong upward momentum
-      bearish + strength > 0.7 â†’ strong downward momentum
-      neutral â†’ no clear direction, market is balanced
-    """
-    try:
-        data = _get(f"/market/{symbol}/sentiment")
-        sent     = data["sentiment"].upper()
-        strength = data["strength"]
-        ratio    = data["buy_ratio"]
-        vel      = data["trade_velocity"]
-
-        bars   = int(strength * 20)
-        bar    = "â–ˆ" * bars + "â–‘" * (20 - bars)
-
-        lines = [f"Sentiment â€” {symbol}"]
-        lines.append(f"  Direction:  {sent}")
-        lines.append(f"  Strength:   [{bar}] {strength:.2f}")
-        lines.append(f"  Buy Ratio:  {ratio*100:.1f}%  "
-                     f"Sell Ratio: {(1-ratio)*100:.1f}%")
-        lines.append(f"  Velocity:   {vel:.2f} trades/sec")
-        lines.append("")
-
-        if data["sentiment"] == "bullish" and strength > 0.6:
-            lines.append("  Signal: Strong buy pressure â€” momentum bots buying")
-        elif data["sentiment"] == "bearish" and strength > 0.6:
-            lines.append("  Signal: Strong sell pressure â€” momentum bots selling")
-        elif data["sentiment"] == "neutral":
-            lines.append("  Signal: Balanced market â€” no clear directional bias")
-
-        return "\n".join(lines)
-    except Exception as e:
-        return f"Error fetching sentiment for {symbol}: {e}"
-
-
-@mcp.tool()
-def get_candles(symbol: str, n: int = 10) -> str:
-    """
-    Get the last N closed OHLCV candlestick bars for a symbol.
-
-    Each candle covers a 10-second window and shows:
-      O = Open  (first trade price in window)
-      H = High  (highest trade price)
-      L = Low   (lowest trade price)
-      C = Close (last trade price)
-      V = Volume (total shares traded)
-
-    Reading candles:
-      Close > Open = bullish candle (green)
-      Close < Open = bearish candle (red)
-      Large body = strong move with conviction
-      Small body = indecision or consolidation
-      High volume candle = conviction behind the move
-
-    Args:
-        symbol: Trading symbol e.g. PEAR, TSLA, LBRY, RNFR, MHRD
-        n:      Number of candles to return (default 10, max 100)
-    """
-    try:
-        data = _get(f"/market/{symbol}/candles?n={n}")
-        if not data:
-            return f"No candles yet for {symbol}. Wait for trades to occur."
-
-        lines = [f"Candles â€” {symbol} (last {len(data)} x 10s bars)"]
-        lines.append(f"  {'#':3}  {'Open':8} {'High':8} {'Low':8} "
-                     f"{'Close':8} {'Vol':6} {'Dir':5}")
-        lines.append("  " + "â”€" * 52)
-
-        for i, c in enumerate(data):
-            bull  = c["close"] >= c["open"]
-            arrow = "â–²" if bull else "â–¼"
-            color = "+" if bull else "-"
-            body  = abs(c["close"] - c["open"])
-            lines.append(
-                f"  {i+1:3}  "
-                f"{c['open']:8.2f} "
-                f"{c['high']:8.2f} "
-                f"{c['low']:8.2f} "
-                f"{c['close']:8.2f} "
-                f"{c['volume']:6}  "
-                f"{arrow} {color}{body:.2f}"
-            )
-
-        # summary
-        if len(data) >= 3:
-            recent_closes = [c["close"] for c in data[-3:]]
-            trend = "UP" if recent_closes[-1] > recent_closes[0] else "DOWN"
-            lines.append(f"\n  Recent trend (last 3 candles): {trend}")
-
-        return "\n".join(lines)
-    except Exception as e:
-        return f"Error fetching candles for {symbol}: {e}"
-
-
-# â”€â”€ Portfolio Tools â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-@mcp.tool()
-def get_portfolio(client_id: str = DEFAULT_AGENT_ID) -> str:
-    """
-    Get portfolio state for a participant.
-
-    Shows holdings, cash, P&L and risk metrics.
-
-    Args:
-        client_id: Participant ID. Use your agent's unique client_id.
-                   Other valid IDs: bot-market-maker, bot-momentum,
-                   bot-random, bot-mean-reversion, user
-
-    Returns:
-      holdings:      shares held per symbol
-      avg_cost:      average purchase price per symbol
-      cash:          available cash
-      realised_pnl:  locked-in profit/loss from closed positions
-      unrealised_pnl: floating profit/loss on open positions
-      sharpe:        risk-adjusted return ratio
-      max_drawdown:  worst peak-to-trough loss fraction
-      var_95:        Value at Risk at 95% confidence
-    """
-    try:
-        data = _get(f"/portfolio/{client_id}")
-        lines = [f"Portfolio â€” {client_id}"]
-        lines.append("")
-
-        holdings = data.get("holdings", [])
-        if not holdings:
-            lines.append("  No open positions.")
-        else:
-            lines.append(f"  {'Symbol':8} {'Qty':6} {'Avg Cost':10} "
-                         f"{'Curr':10} {'Unrealised':12}")
-            lines.append("  " + "â”€" * 48)
-            for h in holdings:
-                pnl = h.get("unrealised", 0) or 0
-                col = "+" if pnl >= 0 else ""
-                lines.append(
-                    f"  {h['symbol']:8} "
-                    f"{h['quantity']:6} "
-                    f"${h['avg_cost']:9.2f} "
-                    f"${h.get('curr_price', 0) or 0:9.2f} "
-                    f"  {col}{pnl:.2f}"
-                )
-
-        lines.append("")
-        lines.append(f"  Cash:           ${data['cash']:,.2f}")
-        r = data["realised_pnl"]
-        u = data["unrealised_pnl"]
-        lines.append(f"  Realised P&L:   {'+' if r >= 0 else ''}{r:.2f}")
-        lines.append(f"  Unrealised P&L: {'+' if u >= 0 else ''}{u:.2f}")
-        lines.append(f"  Total P&L:      {'+' if r+u >= 0 else ''}{r+u:.2f}")
-        lines.append("")
-
-        if data.get("sharpe"):
-            lines.append(f"  Sharpe Ratio:   {data['sharpe']:.3f}")
-        if data.get("max_drawdown"):
-            lines.append(f"  Max Drawdown:   {data['max_drawdown']*100:.1f}%")
-        if data.get("var_95"):
-            lines.append(f"  VaR 95%:        {data['var_95']:.2f}")
-
-        return "\n".join(lines)
-    except Exception as e:
-        return f"Error fetching portfolio for {client_id}: {e}"
-
-
-# â”€â”€ Order Tools â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-@mcp.tool()
-def place_order(
-    symbol     : str,
-    side       : str,
-    quantity   : int,
-    price      : float | None = None,
-    client_id  : str = DEFAULT_AGENT_ID,
-) -> str:
-    """
-    Place a buy or sell order in the market.
-
-    Args:
-        symbol:    Trading symbol: PEAR, TSLA, LBRY, RNFR, MHRD
-        side:      'buy' or 'sell'
-        quantity:  Number of shares (must be > 0)
-        price:     Limit price in dollars. If None â†’ market order.
-        client_id: Your agent's unique client ID (default: agent-claude)
-
-    Order types:
-      Limit order (price provided):
-        Rests in the order book until matched or expires (60s TTL).
-        You control the price but execution is not guaranteed.
-        Better for: entering at a specific price level.
-
-      Market order (no price):
-        Fills immediately at best available price.
-        Execution guaranteed but price may slip on large orders.
-        Better for: urgent entries when you need to be filled.
-
-    Risk checks applied:
-      - Insufficient cash â†’ order rejected
-      - Insufficient shares for sell â†’ order rejected
-      - Symbol halted â†’ order rejected by matching engine
-
-    Returns order_id which you can use to track the order.
-    """
-    valid_symbols = ["PEAR", "TSLA", "LBRY", "RNFR", "MHRD"]
-    symbol = symbol.upper()
-
-    if symbol not in valid_symbols:
-        return (f"Invalid symbol '{symbol}'. "
-                f"Valid symbols: {', '.join(valid_symbols)}")
-
-    if side not in ("buy", "sell"):
-        return "Invalid side. Must be 'buy' or 'sell'."
-
-    if quantity <= 0:
-        return "Quantity must be greater than 0."
-
-    order_type = "limit" if price is not None else "market"
-
-    try:
-        body = {
-            "symbol"    : symbol,
-            "side"      : side,
-            "order_type": order_type,
-            "quantity"  : quantity,
-            "client_id" : client_id,
-        }
-        if price is not None:
-            body["price"] = round(float(price), 2)
-
-        data = _post("/orders", body)
-
-        price_str = (f"@ ${data['price']:.2f}" 
-                     if data.get("price") else "@ MARKET")
-        lines = [
-            f"Order placed successfully:",
-            f"  Order ID:   {data['order_id']}",
-            f"  Symbol:     {data['symbol']}",
-            f"  Side:       {data['side'].upper()}",
-            f"  Type:       {data['order_type']}",
-            f"  Quantity:   {data['quantity']}",
-            f"  Price:      {price_str}",
-            f"  Status:     {data['status'].upper()}",
-            f"  Expires at: {data['expires_at']:.0f} (unix timestamp)",
-        ]
-        return "\n".join(lines)
-    except httpx.HTTPStatusError as e:
-        detail = e.response.json().get("detail", str(e))
-        return f"Order rejected: {detail}"
-    except Exception as e:
-        return f"Error placing order: {e}"
-
-
-# â”€â”€ System Tools â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-@mcp.tool()
-def get_market_status() -> str:
-    """
-    Get the current status of all symbols â€” active or halted.
-
-    A symbol is halted when its price moves more than 5% in 5 seconds
-    (circuit breaker). Halted symbols reject all orders until
-    automatically resumed after 30 seconds.
-
-    Returns status for all symbols including current price and
-    volatility profile.
-    """
-    try:
-        data = _get("/system/status")
-        lines = ["Market Status:"]
-        lines.append("")
-        for s in data:
-            status = "â›” HALTED" if s["halted"] else "âœ… ACTIVE"
-            price  = f"${s['price']:.2f}" if s.get("price") else "â€”"
-            lines.append(
-                f"  {s['symbol']:6}  {status:12}  "
-                f"{price:10}  {s['name']}  ({s['profile']} vol)"
-            )
-        return "\n".join(lines)
-    except Exception as e:
-        return f"Error fetching market status: {e}"
-
-
-@mcp.tool()
-def get_leaderboard() -> str:
-    """
-    Get all participants ranked by total P&L.
-
-    Shows realised + unrealised P&L, cash remaining,
-    Sharpe ratio and max drawdown for each participant.
-
-    Use this to:
-      - See how your agent compares to the bots
-      - Identify which strategies are working
-      - Monitor bot behaviour over time
-
-    Participants:
-      user               Human trader via CLI
-      bot-market-maker   Liquidity provider
-      bot-momentum       Trend follower
-      bot-random         Noise trader
-      bot-mean-reversion Contrarian/RSI fader
-      agent-*            LLM agents
-    """
-    try:
-        data = _get("/system/leaderboard")
-        medals = ["ðŸ¥‡", "ðŸ¥ˆ", "ðŸ¥‰"]
-        lines  = ["Leaderboard â€” Ranked by Total P&L"]
-        lines.append("")
-        lines.append(f"  {'#':4} {'Participant':22} {'Total P&L':12} "
-                     f"{'Realised':10} {'Cash':10} {'Sharpe':8} {'Drawdown'}")
-        lines.append("  " + "â”€" * 75)
-
-        for i, r in enumerate(data):
-            medal = medals[i] if i < 3 else f"  {i+1}."
-            pnl   = r["total_pnl"]
-            col   = "+" if pnl >= 0 else ""
-            name  = r["client_id"].replace("bot-", "")
-            sharpe = f"{r['sharpe']:.2f}" if r.get("sharpe") else "â€”"
-            dd     = (f"{r['max_drawdown']*100:.1f}%"
-                      if r.get("max_drawdown") else "â€”")
-            lines.append(
-                f"  {medal:4} {name:22} "
-                f"{col}{pnl:10.2f}   "
-                f"{r['realised_pnl']:8.2f}   "
-                f"${r['cash']:8,.0f}   "
-                f"{sharpe:6}   {dd}"
-            )
-
-        return "\n".join(lines)
-    except Exception as e:
-        return f"Error fetching leaderboard: {e}"
-
-
-@mcp.tool()
-def get_all_indicators() -> str:
-    """
-    Get a summary of key indicators across all symbols at once.
-
-    Useful for scanning the market to find trading opportunities
-    without calling get_indicators for each symbol individually.
-
-    Returns RSI, sentiment, VWAP deviation and EMA trend
-    for all 5 symbols in one response.
-    """
-    try:
-        lines = ["Market Scan â€” All Symbols"]
-        lines.append("")
-        lines.append(f"  {'SYM':6} {'Price':8} {'RSI':6} "
-                     f"{'vs VWAP':9} {'EMA Trend':12} {'Sentiment':12} {'OFI':6}")
-        lines.append("  " + "â”€" * 65)
-
-        symbols = ["PEAR", "TSLA", "LBRY", "RNFR", "MHRD"]
-        for symbol in symbols:
-            try:
-                d = _get(f"/market/{symbol}/price")
-                s = _get(f"/market/{symbol}/sentiment")
-
-                price    = d.get("price", 0)
-                rsi      = d.get("rsi")
-                vwap     = d.get("vwap")
-                ema_s    = d.get("ema_short")
-                ema_l    = d.get("ema_long")
-                ofi      = d.get("ofi")
-                sent     = s.get("sentiment", "neutral")[:4].upper()
-                strength = s.get("strength", 0)
-
-                rsi_str  = f"{rsi:.1f}" if rsi else "â€”"
-                vwap_dev = ""
-                if vwap and price:
-                    dev = (price - vwap) / vwap * 100
-                    vwap_dev = f"{dev:+.1f}%"
-
-                ema_trend = "â€”"
-                if ema_s and ema_l:
-                    ema_trend = "UP â–²" if ema_s > ema_l else "DN â–¼"
-
-                ofi_str = f"{ofi:+.2f}" if ofi is not None else "â€”"
-
-                lines.append(
-                    f"  {symbol:6} ${price:7.2f} "
-                    f"{rsi_str:6} "
-                    f"{vwap_dev:9} "
-                    f"{ema_trend:12} "
-                    f"{sent:4} {strength:.2f}   "
-                    f"{ofi_str}"
-                )
-            except Exception:
-                lines.append(f"  {symbol:6} â€” data unavailable")
-
-        return "\n".join(lines)
-    except Exception as e:
-        return f"Error scanning market: {e}"
-
-
-# â”€â”€ Entry point â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-if __name__ == "__main__":
-    import sys
-    import os
-    logging.basicConfig(level=logging.INFO)
-
-    try:
-        http.get("/system/health", timeout=3.0)
-        logger.info("[mcp] API reachable at %s", API_BASE)
-    except Exception:
-        print(
-            f"ERROR: Cannot reach API at {API_BASE}\n"
-            f"Start the simulation first:\n"
-            f"  uv run python main.py api\n"
-        )
-        sys.exit(1)
-
-    print(f"\nMCP Server starting on port {MCP_PORT}")
-    print(f"Connect your MCP client to: http://localhost:{MCP_PORT}/mcp")
-    print()
-
-    os.environ["FASTMCP_PORT"] = str(MCP_PORT)
-    mcp.run(transport="streamable-http")
+[Binary file]
 
 
 ================================================
@@ -1472,26 +695,23 @@ from api.models import (
     CandleResponse, SentimentResponse,
 )
 from config import SYMBOL_LIST, SYMBOLS
-from dataclasses import asdict
 
 router = APIRouter(prefix="/market", tags=["Market Data"])
 
-# these are injected by main.py at startup
-_price_feed      = None
-_candle_agg      = None
-_sentiment_engine = None
-_engines         = {}   # symbol â†’ MatchingEngine
+_cache = None
 
 
+def inject_cache(cache):
+    global _cache
+    _cache = cache
+
+
+# keep old inject for backward compat with any direct callers
 def inject(price_feed, candle_agg, sentiment_engine, engines):
-    global _price_feed, _candle_agg, _sentiment_engine, _engines
-    _price_feed       = price_feed
-    _candle_agg       = candle_agg
-    _sentiment_engine = sentiment_engine
-    _engines          = engines
+    pass
 
 
-def _require_symbol(symbol: str):
+def _require_symbol(symbol: str) -> str:
     s = symbol.upper()
     if s not in SYMBOL_LIST:
         raise HTTPException(
@@ -1503,122 +723,72 @@ def _require_symbol(symbol: str):
 
 @router.get("/{symbol}/price", response_model=PriceResponse)
 def get_price(symbol: str):
-    """Latest price and all technical indicators for a symbol."""
     s = _require_symbol(symbol)
-
-    if _price_feed is None:
-        raise HTTPException(status_code=503, detail="Price feed not running.")
-
-    price = _price_feed.get_price(s)
+    if _cache is None:
+        raise HTTPException(status_code=503, detail="Cache not ready.")
+    price = _cache.prices.get(s)
     if price is None:
         raise HTTPException(status_code=404, detail=f"No price data for {s}.")
-
-    # get indicator snapshot from price feed's internal engine
-    ind_engine = _price_feed._indicators.get(s)
-    micro_engine = _price_feed._microstructure.get(s)
-
-    ind_snap   = ind_engine.snapshot()  if ind_engine   else None
-    micro_snap = micro_engine.snapshot() if micro_engine else None
-
     return PriceResponse(
-        symbol      = s,
-        price       = price,
-        vwap        = ind_snap.vwap       if ind_snap else None,
-        bid         = micro_snap.spread.bid if micro_snap else None,
-        ask         = micro_snap.spread.ask if micro_snap else None,
-        spread      = micro_snap.spread.absolute_spread if micro_snap else None,
-        volume      = _price_feed._total_volume.get(s, 0),
-        rsi         = ind_snap.rsi        if ind_snap else None,
-        macd        = ind_snap.macd       if ind_snap else None,
-        macd_signal = ind_snap.macd_signal if ind_snap else None,
-        bb_upper    = ind_snap.bb_upper   if ind_snap else None,
-        bb_lower    = ind_snap.bb_lower   if ind_snap else None,
-        ema_short   = ind_snap.ema_short  if ind_snap else None,
-        ema_long    = ind_snap.ema_long   if ind_snap else None,
-        ofi         = micro_snap.flow.ofi if micro_snap else None,
-        timestamp   = _price_feed._session_start,
+        symbol=s, price=price,
+        vwap=None, bid=None, ask=None, spread=None, volume=0,
+        rsi=None, macd=None, macd_signal=None,
+        bb_upper=None, bb_lower=None,
+        ema_short=None, ema_long=None, ofi=None,
+        timestamp=0.0,
     )
 
 
 @router.get("/{symbol}/orderbook", response_model=OrderBookResponse)
-def get_order_book(symbol: str,
-                   levels: int = Query(default=10, ge=1, le=20)):
-    """Top N bids and asks for a symbol."""
+def get_order_book(symbol: str, levels: int = Query(default=10, ge=1, le=20)):
     s = _require_symbol(symbol)
-    engine = _engines.get(s)
-
-    if engine is None:
-        raise HTTPException(status_code=503, detail="Matching engine not running.")
-
-    depth = engine.get_depth(levels)
-    bids  = [OrderBookLevel(price=p, quantity=q) for p, q in depth["bids"]]
-    asks  = [OrderBookLevel(price=p, quantity=q) for p, q in depth["asks"]]
-
-    return OrderBookResponse(
-        symbol = s,
-        bids   = bids,
-        asks   = asks,
-        spread = engine.get_spread(),
-        mid    = engine.get_mid_price(),
-    )
+    # order book depth lives in the engine pod â€” API pod has no engine reference.
+    # Return empty depth with note; frontend handles gracefully.
+    return OrderBookResponse(symbol=s, bids=[], asks=[], spread=None, mid=None)
 
 
 @router.get("/{symbol}/candles", response_model=list[CandleResponse])
-def get_candles(symbol: str,
-                n: int = Query(default=20, ge=1, le=100)):
-    """Last N closed OHLCV candles for a symbol."""
+def get_candles(symbol: str, n: int = Query(default=20, ge=1, le=100)):
     s = _require_symbol(symbol)
-
-    if _candle_agg is None:
-        raise HTTPException(status_code=503, detail="Candle aggregator not running.")
-
-    candles = _candle_agg.get_history(s, n)
+    if _cache is None:
+        raise HTTPException(status_code=503, detail="Cache not ready.")
+    raw = _cache.candles.get(s, [])[-n:]
     return [
         CandleResponse(
-            symbol      = c.symbol,
-            open        = c.open,
-            high        = c.high,
-            low         = c.low,
-            close       = c.close,
-            volume      = c.volume,
-            vwap        = c.vwap,
-            trade_count = c.trade_count,
-            interval_s  = c.interval_s,
-            open_time   = c.open_time,
-            close_time  = c.close_time,
+            symbol=c.get("symbol", s),
+            open=c["open"], high=c["high"], low=c["low"], close=c["close"],
+            volume=c["volume"], vwap=c.get("vwap", 0.0),
+            trade_count=c.get("trade_count", 0),
+            interval_s=c.get("interval_s", 10),
+            open_time=c["open_time"], close_time=c["close_time"],
         )
-        for c in candles
+        for c in raw
     ]
 
 
 @router.get("/{symbol}/sentiment", response_model=SentimentResponse)
 def get_sentiment(symbol: str):
-    """Current sentiment signal for a symbol."""
     s = _require_symbol(symbol)
-
-    if _sentiment_engine is None:
-        raise HTTPException(status_code=503, detail="Sentiment engine not running.")
-
-    sentiment = _sentiment_engine.get_sentiment(s)
-    if sentiment is None:
+    if _cache is None:
+        raise HTTPException(status_code=503, detail="Cache not ready.")
+    sent = _cache.sentiment.get(s)
+    if sent is None:
         raise HTTPException(status_code=404, detail=f"No sentiment data for {s} yet.")
-
     return SentimentResponse(
-        symbol         = s,
-        sentiment      = sentiment.sentiment,
-        strength       = sentiment.strength,
-        buy_ratio      = sentiment.buy_ratio,
-        trade_velocity = sentiment.trade_velocity,
-        timestamp      = sentiment.timestamp,
+        symbol=s,
+        sentiment=sent["sentiment"],
+        strength=sent["strength"],
+        buy_ratio=sent["buy_ratio"],
+        trade_velocity=sent["trade_velocity"],
+        timestamp=sent.get("timestamp", 0.0),
     )
 
 
 @router.get("/all/prices")
 def get_all_prices():
-    """Current prices for all symbols."""
-    if _price_feed is None:
+    if _cache is None:
         return {s: SYMBOLS[s][1] for s in SYMBOL_LIST}
-    return _price_feed.get_all_prices()
+    return dict(_cache.prices)
 
 
 ================================================
@@ -1628,27 +798,25 @@ FILE: api/routes/market_status.py
 
 from fastapi import APIRouter, HTTPException
 from api.models import MarketStatusResponse, LeaderboardEntry, HealthResponse
-from config import SYMBOL_LIST, SYMBOLS
+from config import SYMBOL_LIST, SYMBOLS, BOOTSTRAP_SERVERS, ALL_TOPICS
 from core.kafka_client import AdminClient
-from config import BOOTSTRAP_SERVERS, ALL_TOPICS
 
 router = APIRouter(prefix="/system", tags=["System"])
 
-_circuit_breaker = None
-_ledger          = None
-_price_feed      = None
+_cache = None
+
+
+def inject_cache(cache):
+    global _cache
+    _cache = cache
 
 
 def inject(circuit_breaker, ledger, price_feed):
-    global _circuit_breaker, _ledger, _price_feed
-    _circuit_breaker = circuit_breaker
-    _ledger          = ledger
-    _price_feed      = price_feed
+    pass
 
 
 @router.get("/health", response_model=HealthResponse)
 def health():
-    """Kafka connectivity and topic status."""
     try:
         admin = AdminClient({"bootstrap.servers": BOOTSTRAP_SERVERS})
         existing = list(admin.list_topics(timeout=5).topics.keys())
@@ -1667,18 +835,14 @@ def health():
 
 @router.get("/status", response_model=list[MarketStatusResponse])
 def market_status():
-    """Halt/active status for all symbols."""
-    prices = _price_feed.get_all_prices() if _price_feed else {}
+    prices = dict(_cache.prices) if _cache else {}
+    halted = dict(_cache.halted) if _cache else {}
     result = []
     for symbol in SYMBOL_LIST:
-        halted = (
-            _circuit_breaker.is_halted(symbol)
-            if _circuit_breaker else False
-        )
         name, _, profile = SYMBOLS[symbol]
         result.append(MarketStatusResponse(
             symbol  = symbol,
-            halted  = halted,
+            halted  = halted.get(symbol, False),
             name    = name,
             price   = prices.get(symbol),
             profile = profile,
@@ -1688,11 +852,29 @@ def market_status():
 
 @router.get("/leaderboard", response_model=list[LeaderboardEntry])
 def leaderboard():
-    """All participants ranked by total P&L."""
-    if _ledger is None:
-        raise HTTPException(status_code=503, detail="Ledger not running.")
+    if _cache is None:
+        raise HTTPException(status_code=503, detail="Cache not ready.")
 
-    rows = _ledger.get_leaderboard()
+    portfolios = dict(_cache.portfolios)
+    prices     = dict(_cache.prices)
+
+    rows = []
+    for client_id, port in portfolios.items():
+        r = port.get("realised_pnl", 0.0)
+        u = port.get("unrealised_pnl", 0.0)
+        rows.append({
+            "client_id"    : client_id,
+            "total_pnl"    : round(r + u, 2),
+            "realised_pnl" : r,
+            "unrealised_pnl": u,
+            "cash"         : port.get("cash", 0.0),
+            "sharpe"       : port.get("sharpe"),
+            "max_drawdown" : port.get("max_drawdown"),
+            "trade_count"  : port.get("trade_count", 0),
+        })
+
+    rows.sort(key=lambda r: r["total_pnl"], reverse=True)
+
     return [
         LeaderboardEntry(
             rank           = i + 1,
@@ -1803,55 +985,51 @@ from api.models import PortfolioResponse, HoldingResponse
 
 router = APIRouter(prefix="/portfolio", tags=["Portfolio"])
 
-_ledger      = None
-_price_feed  = None
+_cache = None
+
+
+def inject_cache(cache):
+    global _cache
+    _cache = cache
 
 
 def inject(ledger, price_feed):
-    global _ledger, _price_feed
-    _ledger     = ledger
-    _price_feed = price_feed
+    pass
 
 
 @router.get("/{client_id}", response_model=PortfolioResponse)
 def get_portfolio(client_id: str):
-    """Holdings, cash, P&L and risk metrics for a client."""
-    if _ledger is None:
-        raise HTTPException(status_code=503, detail="Ledger not running.")
+    if _cache is None:
+        raise HTTPException(status_code=503, detail="Cache not ready.")
 
-    portfolio = _ledger.get_portfolio(client_id)
-    if portfolio is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Client '{client_id}' not found."
-        )
+    port = _cache.portfolios.get(client_id)
+    if port is None:
+        raise HTTPException(status_code=404, detail=f"Client '{client_id}' not found.")
 
-    prices = _price_feed.get_all_prices() if _price_feed else {}
-    snap   = portfolio.to_snapshot(prices)
+    prices = dict(_cache.prices)
+    raw_holdings = port.get("holdings", {})
+    avg_cost     = port.get("avg_cost", {})
 
     holdings = []
-    for symbol, qty in snap.holdings.items():
-        avg   = snap.avg_cost.get(symbol, 0)
-        curr  = prices.get(symbol)
-        unr   = (curr - avg) * qty if curr else None
+    for sym, qty in raw_holdings.items():
+        avg  = avg_cost.get(sym, 0.0)
+        curr = prices.get(sym)
+        unr  = round((curr - avg) * qty, 2) if curr else None
         holdings.append(HoldingResponse(
-            symbol     = symbol,
-            quantity   = qty,
-            avg_cost   = avg,
-            curr_price = curr,
-            unrealised = round(unr, 2) if unr is not None else None,
+            symbol=sym, quantity=qty,
+            avg_cost=avg, curr_price=curr, unrealised=unr,
         ))
 
     return PortfolioResponse(
         client_id      = client_id,
         holdings       = holdings,
-        cash           = snap.cash,
-        realised_pnl   = snap.realised_pnl,
-        unrealised_pnl = snap.unrealised_pnl,
-        sharpe         = snap.sharpe,
-        max_drawdown   = snap.max_drawdown,
-        var_95         = snap.var_95,
-        trade_count    = portfolio._trade_count,
+        cash           = port.get("cash", 0.0),
+        realised_pnl   = port.get("realised_pnl", 0.0),
+        unrealised_pnl = port.get("unrealised_pnl", 0.0),
+        sharpe         = port.get("sharpe"),
+        max_drawdown   = port.get("max_drawdown"),
+        var_95         = port.get("var_95"),
+        trade_count    = port.get("trade_count", 0),
     )
 
 
@@ -2264,19 +1442,90 @@ FILE: db/__init__.py
 ================================================
 FILE: db/candle_store.py
 ================================================
-[Empty file]
+import logging
+from db.client import get_db
+
+logger = logging.getLogger(__name__)
+
+COLLECTION = "candles"
+
+
+def insert_candle(candle: dict) -> None:
+    try:
+        db = get_db()
+        db[COLLECTION].insert_one(candle)
+        logger.debug(f"[candle-store] inserted candle {candle.get('symbol')} @ {candle.get('open_time')}")
+    except Exception as e:
+        logger.error(f"[candle-store] insert failed: {e}")
+
+
+def get_candles(symbol: str, limit: int = 20) -> list[dict]:
+    try:
+        db = get_db()
+        cursor = (
+            db[COLLECTION]
+            .find({"symbol": symbol}, {"_id": 0})
+            .sort("open_time", -1)
+            .limit(limit)
+        )
+        return list(reversed(list(cursor)))  # oldest first
+    except Exception as e:
+        logger.error(f"[candle-store] query failed: {e}")
+        return []
 
 
 ================================================
 FILE: db/client.py
 ================================================
-[Empty file]
+from pymongo import MongoClient
+from config import MONGO_URI, MONGO_DB
+import threading
+
+_client = None
+_lock   = threading.Lock()
+
+def get_db():
+    global _client
+    if _client is None:
+        with _lock:
+            if _client is None:
+                _client = MongoClient(MONGO_URI)
+    return _client[MONGO_DB]
 
 
 ================================================
 FILE: db/trade_store.py
 ================================================
-[Empty file]
+import logging
+from db.client import get_db
+
+logger = logging.getLogger(__name__)
+
+COLLECTION = "trades"
+
+
+def insert_trade(trade: dict) -> None:
+    try:
+        db = get_db()
+        db[COLLECTION].insert_one({**trade, "_id": trade["trade_id"]})
+        logger.debug(f"[trade-store] inserted trade {trade['trade_id']}")
+    except Exception as e:
+        logger.error(f"[trade-store] insert failed: {e}")
+
+
+def get_trades(symbol: str, limit: int = 100) -> list[dict]:
+    try:
+        db = get_db()
+        cursor = (
+            db[COLLECTION]
+            .find({"symbol": symbol}, {"_id": 0})
+            .sort("timestamp", -1)
+            .limit(limit)
+        )
+        return list(cursor)
+    except Exception as e:
+        logger.error(f"[trade-store] query failed: {e}")
+        return []
 
 
 ================================================
@@ -3578,40 +2827,32 @@ class PortfolioLedger:
 FILE: engine/trade_logger.py
 ================================================
 """
-Trade Logger â€” Appends every trade to a JSONL file
+Trade Logger â€” Writes every trade to MongoDB Atlas
 
-Simple but valuable:
-  - Free audit trail of all market activity
-  - Can be replayed into Kafka for backtesting
-  - Useful for debugging sentiment + indicator logic
+Consumes trade-executed, persists each trade to the `trades` collection.
+Interface identical to the old file-based version â€” drop-in replacement.
 
-JSONL format: one JSON object per line
-  {"trade_id": "...", "symbol": "PEAR", "price": 151.0, ...}
-  {"trade_id": "...", "symbol": "TSLA", "price": 90.2,  ...}
+Benefits over trades.jsonl:
+  - Survives pod restarts
+  - Queryable by symbol, time range, participant
+  - Portfolio ledger can replay from Atlas on startup
 """
 
-import json
 import logging
-from pathlib import Path
-from time import time
-
 from config import TOPIC_TRADE_EXECUTED
 from core.kafka_client import MarketConsumer
+from db.trade_store import insert_trade
 
 logger = logging.getLogger(__name__)
-
-LOG_PATH = Path("data/trades.jsonl")
 
 
 class TradeLogger:
     """
-    Consumes trade-executed and appends to data/trades.jsonl.
+    Consumes trade-executed and writes to MongoDB trades collection.
     Lightweight â€” no producer needed.
     """
 
     def __init__(self):
-        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-
         self._consumer = MarketConsumer(
             group_id="trade-logger",
             topics=[TOPIC_TRADE_EXECUTED],
@@ -3619,8 +2860,7 @@ class TradeLogger:
         )
         self._running = False
         self._count   = 0
-
-        logger.info(f"[trade-logger] logging trades to {LOG_PATH}")
+        logger.info("[trade-logger] initialised â€” writing to MongoDB")
 
     def start(self):
         self._running = True
@@ -3635,24 +2875,30 @@ class TradeLogger:
         self._running = False
 
     def _run_loop(self):
-        with open(LOG_PATH, "a", encoding="utf-8") as f:
-            while self._running:
-                msg = self._consumer.poll_once(timeout=0.5)
-                if msg is None:
-                    continue
+        while self._running:
+            msg = self._consumer.poll_once(timeout=0.5)
+            if msg is None:
+                continue
 
-                f.write(json.dumps(msg) + "\n")
-                f.flush()   # ensure write on every trade
-                self._count += 1
+            insert_trade(msg)
+            self._count += 1
 
-                if self._count % 100 == 0:
-                    logger.info(f"[trade-logger] {self._count} trades logged")
+            if self._count % 100 == 0:
+                logger.info(f"[trade-logger] {self._count} trades written to Atlas")
 
 
 ================================================
 FILE: k8s/configmap.yaml
 ================================================
-[Empty file]
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bot-street-config
+  namespace: bot-street
+data:
+  BOOTSTRAP_SERVERS: "bot-street-kafka:9092"
+  MONGO_DB: "bot-street"
+  PYTHONUNBUFFERED: "1"
 
 
 ================================================
@@ -3664,73 +2910,551 @@ FILE: k8s/namespace.yaml
 ================================================
 FILE: k8s/secret.yaml
 ================================================
-[Empty file]
+# DO NOT COMMIT with real values.
+# Use GCP Secret Manager or Sealed Secrets in production.
+# To create manually:
+#   kubectl create secret generic bot-street-secrets \
+#     --from-literal=MONGO_URI='mongodb+srv://...' \
+#     -n bot-street
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bot-street-secrets
+  namespace: bot-street
+type: Opaque
+data:
+  # base64-encoded placeholder â€” replace before deploying
+  MONGO_URI: placeholder
 
 
 ================================================
 FILE: k8s/deployments/api.yaml
 ================================================
-[Empty file]
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: bot-street
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+      - name: api
+        image: gcr.io/YOUR_PROJECT/bot-street:latest
+        ports:
+        - containerPort: 8000
+        env:
+        - name: SERVICE
+          value: api
+        - name: BOOTSTRAP_SERVERS
+          valueFrom:
+            configMapKeyRef:
+              name: bot-street-config
+              key: BOOTSTRAP_SERVERS
+        - name: MONGO_URI
+          valueFrom:
+            secretKeyRef:
+              name: bot-street-secrets
+              key: MONGO_URI
+        - name: MONGO_DB
+          valueFrom:
+            configMapKeyRef:
+              name: bot-street-config
+              key: MONGO_DB
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+        readinessProbe:
+          httpGet:
+            path: /system/health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /system/health
+            port: 8000
+          initialDelaySeconds: 20
+          periodSeconds: 30
+          failureThreshold: 3
 
 
 ================================================
 FILE: k8s/deployments/bots.yaml
 ================================================
-[Empty file]
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bots
+  namespace: bot-street
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bots
+  template:
+    metadata:
+      labels:
+        app: bots
+    spec:
+      containers:
+      - name: bots
+        image: gcr.io/YOUR_PROJECT/bot-street:latest
+        env:
+        - name: SERVICE
+          value: bots
+        - name: BOOTSTRAP_SERVERS
+          valueFrom:
+            configMapKeyRef:
+              name: bot-street-config
+              key: BOOTSTRAP_SERVERS
+        - name: MONGO_URI
+          valueFrom:
+            secretKeyRef:
+              name: bot-street-secrets
+              key: MONGO_URI
+        - name: MONGO_DB
+          valueFrom:
+            configMapKeyRef:
+              name: bot-street-config
+              key: MONGO_DB
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        livenessProbe:
+          exec:
+            command: ["python", "-c", "import sys; sys.exit(0)"]
+          initialDelaySeconds: 15
+          periodSeconds: 30
 
 
 ================================================
 FILE: k8s/deployments/candles.yaml
 ================================================
-[Empty file]
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: candles
+  namespace: bot-street
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: candles
+  template:
+    metadata:
+      labels:
+        app: candles
+    spec:
+      containers:
+      - name: candles
+        image: gcr.io/YOUR_PROJECT/bot-street:latest
+        env:
+        - name: SERVICE
+          value: candles
+        - name: BOOTSTRAP_SERVERS
+          valueFrom:
+            configMapKeyRef:
+              name: bot-street-config
+              key: BOOTSTRAP_SERVERS
+        - name: MONGO_URI
+          valueFrom:
+            secretKeyRef:
+              name: bot-street-secrets
+              key: MONGO_URI
+        - name: MONGO_DB
+          valueFrom:
+            configMapKeyRef:
+              name: bot-street-config
+              key: MONGO_DB
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        livenessProbe:
+          exec:
+            command: ["python", "-c", "import sys; sys.exit(0)"]
+          initialDelaySeconds: 15
+          periodSeconds: 30
 
 
 ================================================
 FILE: k8s/deployments/circuit.yaml
 ================================================
-[Empty file]
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: circuit
+  namespace: bot-street
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: circuit
+  template:
+    metadata:
+      labels:
+        app: circuit
+    spec:
+      containers:
+      - name: circuit
+        image: gcr.io/YOUR_PROJECT/bot-street:latest
+        env:
+        - name: SERVICE
+          value: circuit
+        - name: BOOTSTRAP_SERVERS
+          valueFrom:
+            configMapKeyRef:
+              name: bot-street-config
+              key: BOOTSTRAP_SERVERS
+        - name: MONGO_URI
+          valueFrom:
+            secretKeyRef:
+              name: bot-street-secrets
+              key: MONGO_URI
+        - name: MONGO_DB
+          valueFrom:
+            configMapKeyRef:
+              name: bot-street-config
+              key: MONGO_DB
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        livenessProbe:
+          exec:
+            command: ["python", "-c", "import sys; sys.exit(0)"]
+          initialDelaySeconds: 15
+          periodSeconds: 30
 
 
 ================================================
 FILE: k8s/deployments/engine.yaml
 ================================================
-[Empty file]
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: engine
+  namespace: bot-street
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: engine
+  template:
+    metadata:
+      labels:
+        app: engine
+    spec:
+      containers:
+      - name: engine
+        image: gcr.io/YOUR_PROJECT/bot-street:latest
+        env:
+        - name: SERVICE
+          value: engine
+        - name: BOOTSTRAP_SERVERS
+          valueFrom:
+            configMapKeyRef:
+              name: bot-street-config
+              key: BOOTSTRAP_SERVERS
+        - name: MONGO_URI
+          valueFrom:
+            secretKeyRef:
+              name: bot-street-secrets
+              key: MONGO_URI
+        - name: MONGO_DB
+          valueFrom:
+            configMapKeyRef:
+              name: bot-street-config
+              key: MONGO_DB
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        livenessProbe:
+          exec:
+            command: ["python", "-c", "import sys; sys.exit(0)"]
+          initialDelaySeconds: 15
+          periodSeconds: 30
 
 
 ================================================
 FILE: k8s/deployments/ledger.yaml
 ================================================
-[Empty file]
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledger
+  namespace: bot-street
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ledger
+  template:
+    metadata:
+      labels:
+        app: ledger
+    spec:
+      containers:
+      - name: ledger
+        image: gcr.io/YOUR_PROJECT/bot-street:latest
+        env:
+        - name: SERVICE
+          value: ledger
+        - name: BOOTSTRAP_SERVERS
+          valueFrom:
+            configMapKeyRef:
+              name: bot-street-config
+              key: BOOTSTRAP_SERVERS
+        - name: MONGO_URI
+          valueFrom:
+            secretKeyRef:
+              name: bot-street-secrets
+              key: MONGO_URI
+        - name: MONGO_DB
+          valueFrom:
+            configMapKeyRef:
+              name: bot-street-config
+              key: MONGO_DB
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        livenessProbe:
+          exec:
+            command: ["python", "-c", "import sys; sys.exit(0)"]
+          initialDelaySeconds: 15
+          periodSeconds: 30
 
 
 ================================================
 FILE: k8s/deployments/price-feed.yaml
 ================================================
-[Empty file]
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: price-feed
+  namespace: bot-street
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: price-feed
+  template:
+    metadata:
+      labels:
+        app: price-feed
+    spec:
+      containers:
+      - name: price-feed
+        image: gcr.io/YOUR_PROJECT/bot-street:latest
+        env:
+        - name: SERVICE
+          value: price-feed
+        - name: BOOTSTRAP_SERVERS
+          valueFrom:
+            configMapKeyRef:
+              name: bot-street-config
+              key: BOOTSTRAP_SERVERS
+        - name: MONGO_URI
+          valueFrom:
+            secretKeyRef:
+              name: bot-street-secrets
+              key: MONGO_URI
+        - name: MONGO_DB
+          valueFrom:
+            configMapKeyRef:
+              name: bot-street-config
+              key: MONGO_DB
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        livenessProbe:
+          exec:
+            command: ["python", "-c", "import sys; sys.exit(0)"]
+          initialDelaySeconds: 15
+          periodSeconds: 30
 
 
 ================================================
 FILE: k8s/deployments/sentiment.yaml
 ================================================
-[Empty file]
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentiment
+  namespace: bot-street
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sentiment
+  template:
+    metadata:
+      labels:
+        app: sentiment
+    spec:
+      containers:
+      - name: sentiment
+        image: gcr.io/YOUR_PROJECT/bot-street:latest
+        env:
+        - name: SERVICE
+          value: sentiment
+        - name: BOOTSTRAP_SERVERS
+          valueFrom:
+            configMapKeyRef:
+              name: bot-street-config
+              key: BOOTSTRAP_SERVERS
+        - name: MONGO_URI
+          valueFrom:
+            secretKeyRef:
+              name: bot-street-secrets
+              key: MONGO_URI
+        - name: MONGO_DB
+          valueFrom:
+            configMapKeyRef:
+              name: bot-street-config
+              key: MONGO_DB
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        livenessProbe:
+          exec:
+            command: ["python", "-c", "import sys; sys.exit(0)"]
+          initialDelaySeconds: 15
+          periodSeconds: 30
 
 
 ================================================
 FILE: k8s/ingress/ingress.yaml
 ================================================
-[Empty file]
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bot-street-ingress
+  namespace: bot-street
+  annotations:
+    kubernetes.io/ingress.class: "gce"
+    kubernetes.io/ingress.allow-http: "false"
+    networking.gke.io/managed-certificates: "bot-street-cert"
+spec:
+  rules:
+  - host: bot-street-api.sujalmaheshwari.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: api-service
+            port:
+              number: 80
+---
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: bot-street-cert
+  namespace: bot-street
+spec:
+  domains:
+  - bot-street-api.sujalmaheshwari.com
 
 
 ================================================
 FILE: k8s/kafka/values.yaml
 ================================================
-[Empty file]
+# Bitnami Kafka chart â€” KRaft mode, single broker, minimal resources
+# helm repo add bitnami https://charts.bitnami.com/bitnami
+# helm install bot-street-kafka bitnami/kafka -f k8s/kafka/values.yaml -n bot-street
+
+kraft:
+  enabled: true
+
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  ports:
+    client: 9092
+
+persistence:
+  enabled: true
+  size: 8Gi
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+# Disable zookeeper â€” KRaft mode only
+zookeeper:
+  enabled: false
+
+# Topic auto-creation disabled â€” our code creates topics explicitly
+extraConfig: |
+  auto.create.topics.enable=false
+  log.retention.hours=24
+  offsets.topic.replication.factor=1
+  transaction.state.log.replication.factor=1
+  transaction.state.log.min.isr=1
 
 
 ================================================
 FILE: k8s/services/api-service.yaml
 ================================================
-[Empty file]
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-service
+  namespace: bot-street
+spec:
+  selector:
+    app: api
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 8000
+  type: ClusterIP
 
 
 ================================================
@@ -5226,53 +4950,213 @@ FILE: participants/random_bot.py
 ================================================
 FILE: services/entrypoint.py
 ================================================
-[Empty file]
+import os
+import sys
+import importlib
+
+SERVICE = os.getenv("SERVICE", "").lower()
+
+runners = {
+    "engine"    : "services.run_engine",
+    "ledger"    : "services.run_ledger",
+    "price-feed": "services.run_price_feed",
+    "sentiment" : "services.run_sentiment",
+    "candles"   : "services.run_candles",
+    "circuit"   : "services.run_circuit",
+    "bots"      : "services.run_bots",
+    "api"       : "services.run_api",
+}
+
+if SERVICE not in runners:
+    print(f"Unknown SERVICE={SERVICE!r}. Valid: {list(runners)}")
+    sys.exit(1)
+
+mod = importlib.import_module(runners[SERVICE])
+mod.main()
 
 
 ================================================
 FILE: services/run_api.py
 ================================================
-[Empty file]
+import logging
+import uvicorn
+from core.kafka_client import ensure_topics
+
+logging.basicConfig(level=logging.INFO)
+
+
+def main():
+    ensure_topics()
+    uvicorn.run(
+        "api.main:app",
+        host="0.0.0.0",
+        port=8000,
+        log_level="warning",
+        reload=False,
+    )
+
+
+if __name__ == "__main__":
+    main()
 
 
 ================================================
 FILE: services/run_bots.py
 ================================================
-[Empty file]
+import logging
+import threading
+from core.kafka_client import ensure_topics
+from participants.market_maker import MarketMakerBot
+from participants.momentum_bot import MomentumBot
+from participants.random_bot import RandomBot
+from participants.mean_reversion_bot import MeanReversionBot
+
+logging.basicConfig(level=logging.INFO)
+
+
+def main():
+    ensure_topics()
+
+    bots = [
+        MarketMakerBot(),
+        MomentumBot(),
+        RandomBot(),
+        MeanReversionBot(),
+    ]
+
+    threads = []
+    for bot in bots:
+        t = threading.Thread(target=bot.start, name=bot.client_id, daemon=True)
+        t.start()
+        threads.append(t)
+
+    for t in threads:
+        t.join()
+
+
+if __name__ == "__main__":
+    main()
 
 
 ================================================
 FILE: services/run_candles.py
 ================================================
-[Empty file]
+import logging
+import threading
+from core.kafka_client import ensure_topics
+from engine.candle_aggregator import CandleAggregator
+from engine.trade_logger import TradeLogger
+
+logging.basicConfig(level=logging.INFO)
+
+
+def main():
+    ensure_topics()
+
+    trade_logger = TradeLogger()
+    tl_thread = threading.Thread(target=trade_logger.start, name="trade-logger", daemon=True)
+    tl_thread.start()
+
+    CandleAggregator().start()  # blocks
+
+
+if __name__ == "__main__":
+    main()
 
 
 ================================================
 FILE: services/run_circuit.py
 ================================================
-[Empty file]
+import logging
+from core.kafka_client import ensure_topics
+from engine.circuit_breaker import CircuitBreaker
+
+logging.basicConfig(level=logging.INFO)
+
+
+def main():
+    ensure_topics()
+    CircuitBreaker().start()
+
+
+if __name__ == "__main__":
+    main()
 
 
 ================================================
 FILE: services/run_engine.py
 ================================================
-[Empty file]
+import logging
+from core.kafka_client import ensure_topics
+from engine.matching_engine import run_all_engines
+
+logging.basicConfig(level=logging.INFO)
+
+
+def main():
+    ensure_topics()
+    _, threads = run_all_engines()
+    for t in threads:
+        t.join()
+
+
+if __name__ == "__main__":
+    main()
 
 
 ================================================
 FILE: services/run_ledger.py
 ================================================
-[Empty file]
+import logging
+from core.kafka_client import ensure_topics
+from engine.portfolio_ledger import PortfolioLedger
+
+logging.basicConfig(level=logging.INFO)
+
+
+def main():
+    ensure_topics()
+    PortfolioLedger().start()
+
+
+if __name__ == "__main__":
+    main()
 
 
 ================================================
 FILE: services/run_price_feed.py
 ================================================
-[Empty file]
+import logging
+from core.kafka_client import ensure_topics
+from market.price_feed import PriceFeed
+
+logging.basicConfig(level=logging.INFO)
+
+
+def main():
+    ensure_topics()
+    PriceFeed().start()
+
+
+if __name__ == "__main__":
+    main()
 
 
 ================================================
 FILE: services/run_sentiment.py
 ================================================
-[Empty file]
+import logging
+from core.kafka_client import ensure_topics
+from market.sentiment_engine import SentimentEngine
+
+logging.basicConfig(level=logging.INFO)
+
+
+def main():
+    ensure_topics()
+    SentimentEngine().start()
+
+
+if __name__ == "__main__":
+    main()
 

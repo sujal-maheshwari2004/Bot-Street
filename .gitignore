@@ -1,8 +1,28 @@
+# Python
 .venv/
 __pycache__/
 *.pyc
-.env
-data/*.jsonl
+*.pyo
+*.pyd
+.Python
 *.egg-info/
-.uv/
 dist/
+build/
+
+# Environment
+.env
+*.env
+
+# Data
+data/
+*.jsonl
+
+# Docker
+docker-compose.override.yml
+
+# IDE
+.vscode/
+.idea/
+
+# K8s — never commit real secrets
+# k8s/secret.yaml  ← uncomment if you want to exclude entirely
