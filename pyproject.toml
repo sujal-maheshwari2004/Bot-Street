@@ -1,17 +1,16 @@
 [project]
 name = "bot-street"
-version = "0.1.0"
+version = "0.2.0"
 requires-python = ">=3.12"
 dependencies = [
     "confluent-kafka>=2.4.0",
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.29.0",
-    "rich>=13.7.1",
-    "click>=8.1.7",
     "python-dotenv>=1.0.1",
     "dataclasses-json>=0.6.4",
     "pydantic>=2.7.0",
     "mcp>=1.26.0",
+    "pymongo>=4.7.0",
 ]
 
 [project.optional-dependencies]
@@ -31,6 +30,6 @@ packages = [
     "market",
     "participants",
     "api",
-    "user",
-    "display",
+    "services",
+    "db",
 ]
