@@ -33,11 +33,14 @@ logger = logging.getLogger(__name__)
 
 class APICache:
     def __init__(self):
-        self.prices     : dict[str, float] = {s: SYMBOLS[s][1] for s in SYMBOL_LIST}
-        self.sentiment  : dict[str, dict]  = {}
-        self.candles    : dict[str, list]  = defaultdict(list)
-        self.portfolios : dict[str, dict]  = {}
-        self.halted     : dict[str, bool]  = {s: False for s in SYMBOL_LIST}
+        # Scalar price dict — kept for backward compat with anything reading cache.prices
+        self.prices      : dict[str, float] = {s: SYMBOLS[s][1] for s in SYMBOL_LIST}
+        # Full PriceUpdate message — contains all indicators
+        self.price_data  : dict[str, dict]  = {}
+        self.sentiment   : dict[str, dict]  = {}
+        self.candles     : dict[str, list]  = defaultdict(list)
+        self.portfolios  : dict[str, dict]  = {}
+        self.halted      : dict[str, bool]  = {s: False for s in SYMBOL_LIST}
         self._lock = threading.Lock()
 
     def update_price(self, msg: dict):
@@ -45,7 +48,8 @@ class APICache:
         price  = msg.get("price")
         if symbol and price:
             with self._lock:
-                self.prices[symbol] = price
+                self.prices[symbol]     = price
+                self.price_data[symbol] = msg   # store full message with all indicators
 
     def update_sentiment(self, msg: dict):
         symbol = msg.get("symbol")
@@ -109,7 +113,6 @@ async def lifespan(app: FastAPI):
     _start_consumer("api-cache-portfolio", [TOPIC_PORTFOLIO_SNAP],   cache.update_portfolio, "portfolio")
     _start_consumer("api-cache-halts",     [TOPIC_MARKET_HALT],      cache.update_halt,      "halts")
 
-    # inject cache into routes and MCP
     market.inject_cache(cache)
     portfolio.inject_cache(cache)
     market_status.inject_cache(cache)
@@ -138,14 +141,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Routers ───────────────────────────────────────────────────────────────────
-
 app.include_router(orders.router)
 app.include_router(market.router)
 app.include_router(portfolio.router)
 app.include_router(market_status.router)
-
-# ── MCP sub-app ───────────────────────────────────────────────────────────────
 
 from api.mcp_server import mcp
 app.mount("/mcp", mcp.streamable_http_app())

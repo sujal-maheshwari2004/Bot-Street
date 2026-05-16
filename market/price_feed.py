@@ -36,39 +36,21 @@ logger = logging.getLogger(__name__)
 
 
 class PriceFeed:
-    """
-    One instance handles all symbols.
-
-    Maintains per-symbol state:
-      - IndicatorEngine    → EMA, RSI, MACD, Bollinger, VWAP
-      - MicrostructureEngine → OFI, spread, impact, arrival rate
-      - RiskEngine         → volatility
-
-    Also consumes candles topic to feed ATR into IndicatorEngine.
-
-    Publishes PriceUpdate after every trade — this is the
-    heartbeat of the entire simulation.
-    """
-
     def __init__(self):
-        # per-symbol engines
         self._indicators     : dict[str, IndicatorEngine]      = {}
         self._microstructure : dict[str, MicrostructureEngine] = {}
         self._risk           : dict[str, RiskEngine]           = {}
 
-        # current state per symbol
         self._last_price  : dict[str, float] = {}
         self._total_volume: dict[str, int]   = defaultdict(int)
         self._session_start = time()
 
-        # initialise with seed prices from config
         for symbol, (_, initial_price, _) in SYMBOLS.items():
             self._indicators[symbol]     = IndicatorEngine(symbol)
             self._microstructure[symbol] = MicrostructureEngine(symbol)
             self._risk[symbol]           = RiskEngine(symbol)
             self._last_price[symbol]     = initial_price
 
-        # Kafka
         self._trade_consumer = MarketConsumer(
             group_id="price-feed-trades",
             topics=[TOPIC_TRADE_EXECUTED],
@@ -87,7 +69,36 @@ class PriceFeed:
     def start(self):
         self._running = True
 
-        # candle consumer in background — feeds ATR data
+        # ── Seed prices ──────────────────────────────────────────────────────
+        # Publish initial prices for every symbol so bots have a reference
+        # price on cold start. Without this, bots wait for a price-update
+        # that never arrives (because no trades have executed yet), creating
+        # a deadlock where nothing ever trades.
+        logger.info("[price-feed] publishing seed prices")
+        for symbol, (_, initial_price, _) in SYMBOLS.items():
+            half_spread = 0.05
+            seed = PriceUpdate(
+                symbol      = symbol,
+                price       = initial_price,
+                vwap        = initial_price,
+                bid         = round(initial_price - half_spread, 2),
+                ask         = round(initial_price + half_spread, 2),
+                spread      = round(half_spread * 2, 2),
+                volume      = 0,
+                rsi         = None,
+                macd        = None,
+                macd_signal = None,
+                bb_upper    = None,
+                bb_lower    = None,
+                ema_short   = None,
+                ema_long    = None,
+                ofi         = 0.0,
+            )
+            self._producer.send(TOPIC_PRICE_UPDATE, seed)
+            logger.info(f"[price-feed] seed {symbol} @ {initial_price}")
+        self._producer.flush()
+        # ─────────────────────────────────────────────────────────────────────
+
         candle_thread = threading.Thread(
             target=self._candle_loop,
             name="price-feed-candles",
@@ -107,11 +118,9 @@ class PriceFeed:
         self._running = False
 
     def get_price(self, symbol: str) -> float | None:
-        """Direct access for API — current last price."""
         return self._last_price.get(symbol)
 
     def get_all_prices(self) -> dict[str, float]:
-        """All symbol prices — used by dashboard ticker."""
         return dict(self._last_price)
 
     # ── Internal loops ────────────────────────────────────────────────────────
@@ -124,7 +133,6 @@ class PriceFeed:
             self._process_trade(msg)
 
     def _candle_loop(self):
-        """Feed closed candle OHLC into IndicatorEngine for ATR."""
         while self._running:
             msg = self._candle_consumer.poll_once(timeout=0.5)
             if msg is None:
@@ -139,10 +147,6 @@ class PriceFeed:
             )
 
     def _process_trade(self, msg: dict):
-        """
-        Core method — runs all quant calculations on a new trade
-        and publishes a rich PriceUpdate.
-        """
         symbol   = msg.get("symbol")
         price    = msg.get("price")
         quantity = msg.get("quantity")
@@ -152,8 +156,7 @@ class PriceFeed:
         if not symbol or not price or symbol not in SYMBOL_LIST:
             return
 
-        # update all engines
-        ind  = self._indicators[symbol]
+        ind   = self._indicators[symbol]
         micro = self._microstructure[symbol]
         risk  = self._risk[symbol]
 
@@ -164,12 +167,9 @@ class PriceFeed:
         self._last_price[symbol]   = price
         self._total_volume[symbol] += quantity
 
-        # get current order book quotes for microstructure
-        # (best effort — may be None if book is empty)
         micro_snap = micro.snapshot()
         ind_snap   = ind.snapshot()
 
-        # build PriceUpdate
         update = PriceUpdate(
             symbol      = symbol,
             price       = price,
@@ -198,38 +198,20 @@ class PriceFeed:
         )
 
     def _infer_side(self, trade: dict) -> str:
-        """
-        Infer trade aggressor side from buyer/seller IDs.
-        User and bots are known participants — if buyer is a bot
-        that posts aggressive orders, it's a buy-side aggressor.
-
-        Fallback: alternate buy/sell if we can't determine.
-        In a real exchange, the aggressor tag comes with the trade.
-        """
         buyer_id  = trade.get("buyer_id", "")
         seller_id = trade.get("seller_id", "")
 
-        # market makers are passive (they post resting orders)
-        # so if market maker is the seller, aggressor is buyer
         if "market-maker" in seller_id:
             return "buy"
         if "market-maker" in buyer_id:
             return "sell"
-
-        # user is always aggressive (places market/limit orders)
         if buyer_id == "user":
             return "buy"
         if seller_id == "user":
             return "sell"
 
-        # default: treat as buy
         return "buy"
 
-    def update_order_book_quotes(self, symbol: str,
-                                  bid: float, ask: float):
-        """
-        Called by matching engine or API to push live quotes
-        into the microstructure engine for spread calculations.
-        """
+    def update_order_book_quotes(self, symbol: str, bid: float, ask: float):
         if symbol in self._microstructure:
             self._microstructure[symbol].update_quotes(bid, ask)

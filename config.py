@@ -45,24 +45,24 @@ SYMBOL_LIST        = list(SYMBOLS.keys())
 DEFAULT_SYMBOL     = "PEAR"
 
 # ── Order book ────────────────────────────────────────────────────────────────
-TICK_SIZE          = 0.01       # minimum price increment
-LOT_SIZE           = 1          # minimum order quantity
-ORDER_TTL_SECONDS  = 60         # limit orders expire after this
-TTL_SWEEP_INTERVAL = 5          # seconds between expiry sweeps
+TICK_SIZE          = 0.01
+LOT_SIZE           = 1
+ORDER_TTL_SECONDS  = 60
+TTL_SWEEP_INTERVAL = 5
 
 # ── Circuit breaker ───────────────────────────────────────────────────────────
-CIRCUIT_BREAKER_THRESHOLD = 0.05   # 5% price move triggers halt
-CIRCUIT_BREAKER_WINDOW    = 5      # seconds to measure move over
-CIRCUIT_BREAKER_DURATION  = 30     # seconds halt lasts
+CIRCUIT_BREAKER_THRESHOLD = 0.05
+CIRCUIT_BREAKER_WINDOW    = 5
+CIRCUIT_BREAKER_DURATION  = 30
 
 # ── Candle aggregator ─────────────────────────────────────────────────────────
-CANDLE_INTERVAL_SECONDS = 10       # OHLCV bucket size
-CANDLE_DISPLAY_COUNT    = 20       # candles shown in dashboard
+CANDLE_INTERVAL_SECONDS = 10
+CANDLE_DISPLAY_COUNT    = 20
 
 # ── Sentiment engine ──────────────────────────────────────────────────────────
-SENTIMENT_WINDOW     = 20          # trades in rolling window
-BULLISH_THRESHOLD    = 0.60        # buy ratio > 60% → bullish
-BEARISH_THRESHOLD    = 0.40        # buy ratio < 40% → bearish
+SENTIMENT_WINDOW     = 20
+BULLISH_THRESHOLD    = 0.60
+BEARISH_THRESHOLD    = 0.40
 
 # ── Quant indicators ──────────────────────────────────────────────────────────
 RSI_PERIOD           = 14
@@ -71,33 +71,36 @@ EMA_LONG             = 21
 MACD_SIGNAL          = 9
 BOLLINGER_PERIOD     = 20
 BOLLINGER_STD        = 2.0
-VWAP_RESET_INTERVAL  = 3600       # reset VWAP every hour (simulated day)
+VWAP_RESET_INTERVAL  = 3600
 
 # ── Risk metrics ──────────────────────────────────────────────────────────────
 VAR_CONFIDENCE       = 0.95
-VOLATILITY_WINDOW    = 30          # trades for realized vol
-SHARPE_RISK_FREE     = 0.0         # risk-free rate for POC
+VOLATILITY_WINDOW    = 30
+SHARPE_RISK_FREE     = 0.0
 
 # ── Portfolio ─────────────────────────────────────────────────────────────────
 INITIAL_CASH         = 10_000.00
-MAX_POSITION_PCT     = 0.40        # max 40% of portfolio in one symbol
+MAX_POSITION_PCT     = 0.40
 MAX_POSITION_SHARES  = 500
 
 # ── Bots ──────────────────────────────────────────────────────────────────────
 BOT_TICK_SECONDS     = 1.5
 
-MARKET_MAKER_SPREAD  = 0.10        # $0.10 each side of mid
+# Spread tightened from $0.10 → $0.01 so random/momentum bots can cross it.
+# At $0.10 each side the book never fills — aggressive bots place market orders
+# but the market maker's quotes are too wide for them to hit at seed prices.
+MARKET_MAKER_SPREAD  = 0.01        # $0.01 each side of mid
 MARKET_MAKER_QTY     = 10
 
 MOMENTUM_QTY         = 5
-MOMENTUM_THRESHOLD   = 0.65        # sentiment strength to trigger
+MOMENTUM_THRESHOLD   = 0.65
 
 RANDOM_QTY_MAX       = 8
 
 MEAN_REVERSION_QTY   = 5
 RSI_OVERBOUGHT       = 70
 RSI_OVERSOLD         = 30
-VWAP_DEVIATION_PCT   = 0.02        # 2% from VWAP triggers mean reversion
+VWAP_DEVIATION_PCT   = 0.02
 
 # ── Participants ──────────────────────────────────────────────────────────────
 USER_CLIENT_ID         = "user"

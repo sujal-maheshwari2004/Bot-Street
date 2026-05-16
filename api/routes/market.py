@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, HTTPException, Query
 from api.models import (
-    PriceResponse, OrderBookResponse, OrderBookLevel,
+    PriceResponse, OrderBookResponse,
     CandleResponse, SentimentResponse,
 )
 from config import SYMBOL_LIST, SYMBOLS
@@ -15,11 +15,6 @@ _cache = None
 def inject_cache(cache):
     global _cache
     _cache = cache
-
-
-# keep old inject for backward compat with any direct callers
-def inject(price_feed, candle_agg, sentiment_engine, engines):
-    pass
 
 
 def _require_symbol(symbol: str) -> str:
@@ -37,24 +32,39 @@ def get_price(symbol: str):
     s = _require_symbol(symbol)
     if _cache is None:
         raise HTTPException(status_code=503, detail="Cache not ready.")
+
     price = _cache.prices.get(s)
     if price is None:
         raise HTTPException(status_code=404, detail=f"No price data for {s}.")
+
+    # Read full PriceUpdate from cache — populated by price-feed via Kafka.
+    # Falls back to nulls gracefully if not yet received (cold start).
+    d = _cache.price_data.get(s, {})
+
     return PriceResponse(
-        symbol=s, price=price,
-        vwap=None, bid=None, ask=None, spread=None, volume=0,
-        rsi=None, macd=None, macd_signal=None,
-        bb_upper=None, bb_lower=None,
-        ema_short=None, ema_long=None, ofi=None,
-        timestamp=0.0,
+        symbol      = s,
+        price       = price,
+        vwap        = d.get("vwap"),
+        bid         = d.get("bid"),
+        ask         = d.get("ask"),
+        spread      = d.get("spread"),
+        volume      = d.get("volume", 0),
+        rsi         = d.get("rsi"),
+        macd        = d.get("macd"),
+        macd_signal = d.get("macd_signal"),
+        bb_upper    = d.get("bb_upper"),
+        bb_lower    = d.get("bb_lower"),
+        ema_short   = d.get("ema_short"),
+        ema_long    = d.get("ema_long"),
+        ofi         = d.get("ofi"),
+        timestamp   = d.get("timestamp", 0.0),
     )
 
 
 @router.get("/{symbol}/orderbook", response_model=OrderBookResponse)
 def get_order_book(symbol: str, levels: int = Query(default=10, ge=1, le=20)):
     s = _require_symbol(symbol)
-    # order book depth lives in the engine pod — API pod has no engine reference.
-    # Return empty depth with note; frontend handles gracefully.
+    # Order book depth lives in the engine pod — API pod has no engine reference.
     return OrderBookResponse(symbol=s, bids=[], asks=[], spread=None, mid=None)
 
 
@@ -66,12 +76,17 @@ def get_candles(symbol: str, n: int = Query(default=20, ge=1, le=100)):
     raw = _cache.candles.get(s, [])[-n:]
     return [
         CandleResponse(
-            symbol=c.get("symbol", s),
-            open=c["open"], high=c["high"], low=c["low"], close=c["close"],
-            volume=c["volume"], vwap=c.get("vwap", 0.0),
-            trade_count=c.get("trade_count", 0),
-            interval_s=c.get("interval_s", 10),
-            open_time=c["open_time"], close_time=c["close_time"],
+            symbol      = c.get("symbol", s),
+            open        = c["open"],
+            high        = c["high"],
+            low         = c["low"],
+            close       = c["close"],
+            volume      = c["volume"],
+            vwap        = c.get("vwap", 0.0),
+            trade_count = c.get("trade_count", 0),
+            interval_s  = c.get("interval_s", 10),
+            open_time   = c["open_time"],
+            close_time  = c["close_time"],
         )
         for c in raw
     ]
@@ -86,12 +101,12 @@ def get_sentiment(symbol: str):
     if sent is None:
         raise HTTPException(status_code=404, detail=f"No sentiment data for {s} yet.")
     return SentimentResponse(
-        symbol=s,
-        sentiment=sent["sentiment"],
-        strength=sent["strength"],
-        buy_ratio=sent["buy_ratio"],
-        trade_velocity=sent["trade_velocity"],
-        timestamp=sent.get("timestamp", 0.0),
+        symbol         = s,
+        sentiment      = sent["sentiment"],
+        strength       = sent["strength"],
+        buy_ratio      = sent["buy_ratio"],
+        trade_velocity = sent["trade_velocity"],
+        timestamp      = sent.get("timestamp", 0.0),
     )
 
 
