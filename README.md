@@ -1,260 +1,414 @@
-# Market Simulator
+# Bot Street Backend
 
-A terminal-based algorithmic market simulator built on Apache Kafka (KRaft mode).
-Every participant — user, bots, and engines — communicates exclusively via Kafka messages.
+Kafka-native distributed market infrastructure for a real-time algorithmic trading simulator.
 
-Dual purpose: working simulator AND trading concepts learning tool.
-
----
-
-## Tech Stack
-
-| Layer | Technology |
-|---|---|
-| Message Broker | Apache Kafka KRaft (no Zookeeper) |
-| Container | Docker Compose |
-| Backend | Python 3.12 |
-| Kafka Client | confluent-kafka |
-| REST API | FastAPI + Uvicorn |
-| Terminal UI | Rich |
-| CLI | Click |
-| Package Manager | UV |
+Bot Street Backend powers the exchange engine, trading agents, analytics pipeline, portfolio system, sentiment engine, REST APIs, and MCP-compatible AI trading interfaces.
 
 ---
 
-## Quick Start
+# Overview
 
-### 1. Prerequisites
-- Docker Desktop running
-- Python 3.12+
-- UV installed: pip install uv
+This repository implements a distributed event-driven market simulation architecture inspired by modern electronic exchanges.
 
-### 2. Start Kafka
-docker compose up -d
+Every subsystem communicates exclusively through Kafka topics:
 
-Verify:
-docker compose ps
-You should see market-kafka with status healthy.
+* matching engine
+* trading bots
+* portfolio ledger
+* candle aggregation
+* market sentiment
+* circuit breakers
+* API services
+* AI agents
 
-### 3. Install dependencies
-uv sync
+The system is deployed on:
 
-### 4. Run the simulator
+* Google Kubernetes Engine (GKE)
+* Apache Kafka (KRaft mode)
+* MongoDB
+* Docker containers
 
-Full mode — simulation + dashboard:
-uv run python main.py dashboard --symbol PEAR
-
-In a second terminal — trading CLI:
-uv run python main.py trade
-
-Full mode with REST API:
-uv run python main.py all --symbol PEAR
-API docs: http://localhost:8000/docs
+Frontend terminal is deployed independently on Google Cloud Run.
 
 ---
 
-## Run Modes
+# Core Concepts
 
-| Command | Description |
-|---|---|
-| main.py sim | Headless simulation, no UI |
-| main.py dashboard --symbol X | Simulation + terminal dashboard |
-| main.py api | Simulation + FastAPI REST server |
-| main.py all | Simulation + API + dashboard |
-| main.py dash --symbol X | Dashboard only, sim already running |
-| main.py trade | Interactive trading CLI |
+Bot Street models actual exchange infrastructure concepts:
+
+* price-time priority matching
+* distributed event streaming
+* market microstructure analytics
+* sentiment propagation
+* quant indicators
+* portfolio accounting
+* risk metrics
+* circuit breakers
+* autonomous trading participants
+
+This is not a toy REST-only simulator.
+
+The architecture is intentionally event-driven and service-oriented.
 
 ---
 
-## Directory Structure
+# Architecture
 
+```text
+                         ┌────────────────────┐
+                         │ React Terminal UI  │
+                         │  Cloud Run         │
+                         └─────────┬──────────┘
+                                   │ REST / MCP
+                                   ▼
+                     ┌──────────────────────────┐
+                     │ FastAPI Gateway Service  │
+                     │ MCP Server               │
+                     └──────────┬───────────────┘
+                                │
+                                ▼
+                    ┌──────────────────────────┐
+                    │ Apache Kafka (KRaft)     │
+                    │ Event Backbone           │
+                    └──────┬─────────┬─────────┘
+                           │         │
+         ┌─────────────────┘         └─────────────────┐
+         ▼                                             ▼
+
+┌─────────────────┐                        ┌─────────────────┐
+│ Matching Engine │                        │ Sentiment Engine│
+└─────────────────┘                        └─────────────────┘
+
+┌─────────────────┐                        ┌─────────────────┐
+│ Portfolio Ledger│                        │ Candle Engine   │
+└─────────────────┘                        └─────────────────┘
+
+┌─────────────────┐                        ┌─────────────────┐
+│ Trading Bots    │                        │ Risk Analytics  │
+└─────────────────┘                        └─────────────────┘
 ```
-market-simulator/
-│
-├── docker-compose.yml          # Kafka KRaft single node
-├── config.py                   # All constants and tuning knobs
-├── main.py                     # Entry point — all run modes
-│
-├── core/
-│   ├── schemas.py              # All Kafka message types
-│   └── kafka_client.py         # Producer/consumer wrappers
+
+---
+
+# Tech Stack
+
+| Layer            | Technology               |
+| ---------------- | ------------------------ |
+| Language         | Python 3.12              |
+| API              | FastAPI                  |
+| Messaging        | Apache Kafka             |
+| Kafka Client     | confluent-kafka          |
+| Database         | MongoDB                  |
+| Containerization | Docker                   |
+| Orchestration    | Kubernetes (GKE)         |
+| AI Protocol      | MCP                      |
+| Deployment       | Google Kubernetes Engine |
+| Package Manager  | UV                       |
+
+---
+
+# Distributed Services
+
+Each service is independently deployable.
+
+| Service    | Responsibility                   |
+| ---------- | -------------------------------- |
+| api        | FastAPI gateway + MCP server     |
+| engine     | Matching engine                  |
+| bots       | Algorithmic trading participants |
+| ledger     | Portfolio + PnL accounting       |
+| candles    | OHLCV aggregation                |
+| sentiment  | Market sentiment analysis        |
+| price-feed | Market state propagation         |
+| circuit    | Circuit breaker management       |
+
+All services consume and produce Kafka events.
+
+---
+
+# Repository Structure
+
+```text
+bot-street/
+├── api/
+│   ├── routes/
+│   ├── models.py
+│   ├── main.py
+│   └── mcp_server.py
 │
 ├── engine/
-│   ├── order_book.py           # Limit order book — price-time priority
-│   ├── matching_engine.py      # Kafka → order book → Kafka
-│   ├── portfolio_ledger.py     # Holdings, cash, P&L, risk per client
-│   ├── circuit_breaker.py      # Halts trading on extreme price moves
-│   ├── candle_aggregator.py    # OHLCV 10-second buckets
-│   └── trade_logger.py         # Appends every trade to trades.jsonl
+│   ├── matching_engine.py
+│   ├── order_book.py
+│   ├── portfolio_ledger.py
+│   ├── candle_aggregator.py
+│   └── circuit_breaker.py
 │
 ├── market/
-│   ├── price_feed.py           # Last price, VWAP, all indicators
-│   ├── sentiment_engine.py     # Bullish/bearish signal from trade flow
+│   ├── price_feed.py
+│   ├── sentiment_engine.py
 │   └── quant/
-│       ├── indicators.py       # EMA, RSI, MACD, Bollinger, VWAP, ATR
-│       ├── risk.py             # Sharpe, Sortino, VaR, CVaR, drawdown
-│       └── microstructure.py   # OFI, spread, market impact, Kyle lambda
+│       ├── indicators.py
+│       ├── risk.py
+│       └── microstructure.py
 │
 ├── participants/
-│   ├── base_bot.py             # Shared loop all bots inherit
-│   ├── market_maker.py         # Posts both sides, adjusts with sentiment
-│   ├── momentum_bot.py         # Trend follower using EMA crossover
-│   ├── random_bot.py           # Noise trader
-│   └── mean_reversion_bot.py   # Fades RSI extremes back to VWAP
+│   ├── market_maker.py
+│   ├── momentum_bot.py
+│   ├── mean_reversion_bot.py
+│   └── random_bot.py
 │
-├── api/
-│   ├── main.py                 # FastAPI app with lifespan management
-│   ├── models.py               # Pydantic request/response models
-│   ├── mcp_server.py           # MCP server for LLM agent trading
-│   └── routes/
-│       ├── orders.py           # POST /orders, DELETE /orders/{id}
-│       ├── market.py           # GET price, orderbook, candles, sentiment
-│       ├── portfolio.py        # GET holdings, P&L, risk metrics
-│       └── market_status.py    # GET health, halt status, leaderboard
-│
-├── user/
-│   └── cli.py                  # Interactive trading terminal
-│
-├── display/
-│   └── dashboard.py            # Live Rich terminal dashboard
-│
-└── data/
-    └── trades.jsonl            # Append-only trade audit log
+├── db/
+├── core/
+├── services/
+├── k8s/
+└── kafka.yaml
 ```
----
-
-## Kafka Topics
-
-| Topic | Produced By | Consumed By |
-|---|---|---|
-| market-orders | User, Bots, API | Matching Engine |
-| trade-executed | Matching Engine | Ledger, Price Feed, Candles, Logger |
-| price-update | Price Feed | Bots, Circuit Breaker, Sentiment, Dashboard |
-| market-sentiment | Sentiment Engine | Bots, Dashboard, API |
-| portfolio-snapshot | Portfolio Ledger | Dashboard, API |
-| candles | Candle Aggregator | Dashboard, API |
-| market-halt | Circuit Breaker | Matching Engine, Bots, Dashboard |
-| order-expired | Matching Engine | Dashboard, Logger |
 
 ---
 
-## Symbols (Parody)
+# Kafka Topics
 
-| Symbol | Company | Volatility |
-|---|---|---|
-| PEAR | Pear Technologies | Medium |
-| TSLA | TeslaCoil Motors | High |
-| LBRY | Labyrinth Search | Low |
-| RNFR | Rainforest Commerce | Medium |
-| MHRD | Microhard Corp | Low |
-
----
-
-## Participants
-
-| Participant | Strategy |
-|---|---|
-| User | Manual orders via CLI or REST API |
-| Market Maker | Posts bid + ask around mid, skews with sentiment and OFI |
-| Momentum Bot | Buys bullish, sells bearish, scales with EMA crossover confirmation |
-| Random Bot | Noise trader — random side, size, price every tick |
-| Mean Reversion Bot | Fades RSI extremes, anchors to VWAP deviation |
+| Topic              | Purpose                 |
+| ------------------ | ----------------------- |
+| market-orders      | Incoming order stream   |
+| trade-executed     | Trade settlement events |
+| price-update       | Real-time market state  |
+| candles            | OHLCV candles           |
+| portfolio-snapshot | Portfolio state         |
+| market-sentiment   | Sentiment propagation   |
+| market-halt        | Circuit breaker events  |
+| order-expired      | TTL expiration events   |
 
 ---
 
-## Trading CLI Commands
+# Trading Engine
 
-market> buy PEAR 10 150.50    limit buy 10 shares of PEAR at 150.50
-market> sell PEAR 5           market sell 5 shares of PEAR
-market> prices                show all current prices
-market> portfolio             show holdings and P&L
-market> help                  show all commands
-market> quit                  exit
+The matching engine implements:
 
----
+* price-time priority
+* limit orders
+* market orders
+* partial fills
+* order expiration
+* bid/ask book management
 
-## REST API Endpoints
-
-Orders:
-  POST   /orders                       place order
-  DELETE /orders/{order_id}            cancel order
-
-Market Data:
-  GET    /market/{symbol}/price        latest price + all indicators
-  GET    /market/{symbol}/orderbook    top 10 bids and asks
-  GET    /market/{symbol}/candles      last N OHLCV candles
-  GET    /market/{symbol}/sentiment    bullish/bearish signal
-  GET    /market/all/prices            all symbol prices
-
-Portfolio:
-  GET    /portfolio/{client_id}        holdings, cash, P&L, risk metrics
-
-System:
-  GET    /system/health                Kafka connectivity check
-  GET    /system/status                all symbols halt/active status
-  GET    /system/leaderboard           all participants ranked by P&L
+All executions are emitted as Kafka events.
 
 ---
 
-## Quant Concepts Implemented
+# Quant Infrastructure
 
-Technical Indicators:
-  EMA (9, 21)       Exponential moving average, crossover signals
-  RSI (14)          Relative strength index, overbought/oversold
-  MACD (12/26/9)    Momentum convergence/divergence
-  Bollinger Bands   Volatility envelope, squeeze detection
-  VWAP              Volume weighted average price, institutional benchmark
-  ATR (14)          Average true range, volatility measure
+## Indicators
 
-Risk Metrics:
-  Sharpe Ratio      Return per unit of total risk
-  Sortino Ratio     Return per unit of downside risk only
-  Max Drawdown      Worst peak-to-trough decline
-  VaR 95%           Value at risk, worst expected loss 95% of the time
-  CVaR 95%          Expected loss beyond VaR threshold
-  Calmar Ratio      Return divided by max drawdown
-  Profit Factor     Total wins divided by total losses
+Implemented in `market/quant/indicators.py`
 
-Market Microstructure:
-  Bid-Ask Spread    Cost of immediacy, liquidity measure
-  OFI               Order flow imbalance, directional pressure
-  Market Impact     Price move per unit of volume traded
-  Kyle Lambda       Price impact coefficient from Kyle (1985)
-  Amihud Illiquidity  Price impact per dollar of volume
-  Roll Spread       Implied spread from serial price correlation
-  Trade Arrival Rate  Activity level, trades per second
+* EMA
+* RSI
+* MACD
+* Bollinger Bands
+* VWAP
+* ATR
 
 ---
 
-## POC Constraints
+## Risk Metrics
 
-- No persistence — everything in-memory except trades.jsonl
-- No authentication on API or CLI
-- Bots run as threads inside one process
-- Single Docker container for Kafka
-- No short selling — bots can only sell what they hold
-- Order book depth display uses synthetic levels for POC
+Implemented in `market/quant/risk.py`
 
----
-
-## MCP Server (LLM Agent Trading)
-
-The MCP server wraps the FastAPI as tools for any MCP-compatible agent.
-Start the full simulation first, then connect your agent to the MCP server.
-
-Available tools:
-  get_prices            current price for all symbols
-  get_order_book        top bids and asks for a symbol
-  get_sentiment         bullish/bearish signal and strength
-  get_indicators        RSI, MACD, Bollinger, VWAP, EMA
-  get_portfolio         holdings, cash, P&L for any client
-  get_candles           last N OHLCV candles
-  place_order           submit a buy or sell order
-  get_leaderboard       all participants ranked by P&L
-  get_market_status     halted/active status per symbol
+* Sharpe Ratio
+* Sortino Ratio
+* VaR / CVaR
+* Max Drawdown
+* Calmar Ratio
+* Profit Factor
 
 ---
 
-## License
+## Market Microstructure
+
+Implemented in `market/quant/microstructure.py`
+
+* Order Flow Imbalance
+* Bid-Ask Spread
+* Kyle Lambda
+* Market Impact
+* Amihud Illiquidity
+* Trade Arrival Rate
+
+---
+
+# Trading Bots
+
+The simulator includes autonomous market participants.
+
+| Bot                | Strategy                            |
+| ------------------ | ----------------------------------- |
+| Market Maker       | Provides liquidity around mid-price |
+| Momentum Bot       | EMA crossover trend following       |
+| Mean Reversion Bot | RSI + VWAP mean reversion           |
+| Random Bot         | Noise trading                       |
+
+Bots consume Kafka events and trade continuously.
+
+---
+
+# REST API
+
+## Orders
+
+```http
+POST /orders
+DELETE /orders/{id}
+```
+
+## Market Data
+
+```http
+GET /market/{symbol}/price
+GET /market/{symbol}/candles
+GET /market/{symbol}/sentiment
+GET /market/all/prices
+```
+
+## System
+
+```http
+GET /system/health
+GET /system/status
+GET /system/leaderboard
+```
+
+Swagger Docs:
+
+```text
+http://localhost:8000/docs
+```
+
+---
+
+# MCP Server
+
+The backend exposes an MCP-compatible interface for AI agents.
+
+Mounted at:
+
+```text
+/mcp
+```
+
+Available tools include:
+
+* get_prices
+* get_order_book
+* get_sentiment
+* get_indicators
+* get_portfolio
+* place_order
+* get_leaderboard
+* get_market_status
+
+This enables autonomous LLM agents to trade directly against the exchange.
+
+---
+
+# Kubernetes Deployment
+
+Infrastructure is designed for GKE deployment.
+
+Included manifests:
+
+```text
+k8s/
+├── deployments/
+├── services/
+├── ingress/
+├── kafka/
+├── configmap.yaml
+└── secret.yaml
+```
+
+---
+
+# Deployment Architecture
+
+| Component          | Platform                 |
+| ------------------ | ------------------------ |
+| Backend Services   | Google Kubernetes Engine |
+| Kafka              | GKE StatefulSet          |
+| API Gateway        | GKE                      |
+| Frontend           | Google Cloud Run         |
+| Container Registry | Artifact Registry        |
+
+---
+
+# Local Development
+
+## Requirements
+
+* Python 3.12+
+* Docker
+* Kubernetes CLI
+* UV
+* Kafka
+
+---
+
+## Install
+
+```bash
+uv sync
+```
+
+---
+
+## Run API
+
+```bash
+uvicorn api.main:app --reload
+```
+
+---
+
+## Run Services
+
+```bash
+python services/run_engine.py
+python services/run_bots.py
+python services/run_sentiment.py
+```
+
+---
+
+# Example Symbols
+
+| Symbol | Company             |
+| ------ | ------------------- |
+| PEAR   | Pear Technologies   |
+| TSLA   | TeslaCoil Motors    |
+| LBRY   | Labyrinth Search    |
+| RNFR   | Rainforest Commerce |
+| MHRD   | Microhard Corp      |
+
+---
+
+# Design Goals
+
+* Event-driven infrastructure
+* Distributed service orchestration
+* AI-native interfaces
+* Quantitative analytics
+* Real-time market simulation
+* Cloud-native deployment
+* Low coupling between services
+
+---
+
+# License
 
 MIT
+
+---
+
+# Author
+
+Sujal Maheshwari
